@@ -30,6 +30,7 @@ import (
 	"github.com/kaeawc/evaldiff/internal/coverage"
 	"github.com/kaeawc/evaldiff/internal/diff"
 	"github.com/kaeawc/evaldiff/internal/index"
+	evaldiffio "github.com/kaeawc/evaldiff/internal/io"
 	"github.com/kaeawc/evaldiff/internal/rank"
 	"github.com/kaeawc/evaldiff/internal/vfs"
 )
@@ -164,16 +165,20 @@ func runDiff(args []string, stdout io.Writer) error {
 
 // runRisk is the headline pipeline: build behavior indexes for both
 // trees, build coverage for head, attach Touches, diff, intersect, rank,
-// and emit JSON. Failures at any stage halt with a wrapped error.
+// and emit the result. Failures at any stage halt with a wrapped error.
+//
+// --format json (default) emits indented JSON; --format markdown emits a
+// PR-comment-shaped markdown blob suitable for the GitHub Action wrapper.
 func runRisk(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("risk", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	format := fs.String("format", "json", "output format: json | markdown")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rest := fs.Args()
 	if len(rest) != 2 {
-		return errors.New("usage: evaldiff [risk] <baseDir> <headDir>")
+		return errors.New("usage: evaldiff [risk] [--format json|markdown] <baseDir> <headDir>")
 	}
 	baseDir, headDir := rest[0], rest[1]
 	ctx := context.Background()
@@ -196,9 +201,17 @@ func runRisk(args []string, stdout io.Writer) error {
 	}
 	risk := rank.Compute(diff.Diff(baseIdx, headIdx), headIdx, cov)
 
-	enc := json.NewEncoder(stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(risk)
+	switch *format {
+	case "json":
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(risk)
+	case "markdown":
+		_, err := io.WriteString(stdout, evaldiffio.RenderMarkdown(risk))
+		return err
+	default:
+		return fmt.Errorf("unknown --format %q (want json or markdown)", *format)
+	}
 }
 
 func printUsage(w io.Writer) {
@@ -206,10 +219,11 @@ func printUsage(w io.Writer) {
        evaldiff <subcommand> [args]
 
 subcommands:
-  risk  <baseDir> <headDir>
+  risk [--format json|markdown] <baseDir> <headDir>
                          Same as the headline shorthand. Builds behavior +
                          coverage indexes for head, diffs against base,
-                         intersects, ranks, and prints EvalsAtRisk JSON.
+                         intersects, ranks, and prints EvalsAtRisk.
+                         --format markdown emits a PR-comment blob.
   index [--hash] <dir>   Build behavior index for a source tree (JSON to stdout).
                          --hash prints only the content-addressable hash.
   coverage [--no-touches] <dir>
