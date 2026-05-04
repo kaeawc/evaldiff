@@ -78,7 +78,7 @@ Agent(model=MODEL, system=load_prompt("intro"))
 			}},
 		},
 		{
-			name: "tools kwarg captured as dynamic list expression",
+			name: "tools list literal of identifiers also populates ToolNames",
 			src: `Agent(model="m", tools=[search, browse])
 `,
 			want: []Agent{{
@@ -87,6 +87,31 @@ Agent(model=MODEL, system=load_prompt("intro"))
 				Constructor: "Agent",
 				Model:       Value{Kind: ValueLiteral, Str: "m", Source: `"m"`},
 				Tools:       Value{Kind: ValueDynamic, Source: "[search, browse]"},
+				ToolNames:   []string{"search", "browse"},
+			}},
+		},
+		{
+			name: "tools list with calls or attributes leaves ToolNames empty",
+			src: `Agent(model="m", tools=[search.as_tool(), make_browser()])
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Model:       Value{Kind: ValueLiteral, Str: "m", Source: `"m"`},
+				Tools:       Value{Kind: ValueDynamic, Source: "[search.as_tool(), make_browser()]"},
+			}},
+		},
+		{
+			name: "tools as a function call leaves ToolNames empty",
+			src: `Agent(model="m", tools=load_tools())
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Model:       Value{Kind: ValueLiteral, Str: "m", Source: `"m"`},
+				Tools:       Value{Kind: ValueDynamic, Source: "load_tools()"},
 			}},
 		},
 		{
