@@ -60,7 +60,7 @@ def test_param(x):
     assert x
 `,
 			want: []TestEntry{
-				{File: "/x.py", Line: 1, Name: "test_param"},
+				{File: "/x.py", Line: 1, Name: "test_param", Identifiers: []string{"x"}},
 			},
 		},
 		{
@@ -154,6 +154,55 @@ def test_real():
 				t.Fatalf("mismatch:\n got: %+v\nwant: %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExtractTests_CollectsIdentifiersFromBody(t *testing.T) {
+	src := `from app.agents import researcher
+from app.tools import search
+
+def test_research():
+    result = researcher.run("hello")
+    items = search(query="x")
+    assert len(items) > 0
+
+class TestX:
+    def test_method(self):
+        helper = make_helper()
+        helper.go()
+`
+	got, err := ExtractTests(context.Background(), "/x.py", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTests: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("test count = %d, want 2", len(got))
+	}
+	// test_research body references: researcher, run, items, search, query,
+	// assert (keyword), len.
+	wantTopLevel := []string{"items", "len", "query", "researcher", "result", "run", "search"}
+	if !reflect.DeepEqual(got[0].Identifiers, wantTopLevel) {
+		t.Fatalf("test_research Identifiers:\n got: %v\nwant: %v", got[0].Identifiers, wantTopLevel)
+	}
+	// test_method body references: helper, make_helper, go.
+	// `self` is a parameter, not a body reference, so it's intentionally
+	// not collected — collectBodyIdentifiers walks only the function body.
+	wantMethod := []string{"go", "helper", "make_helper"}
+	if !reflect.DeepEqual(got[1].Identifiers, wantMethod) {
+		t.Fatalf("test_method Identifiers:\n got: %v\nwant: %v", got[1].Identifiers, wantMethod)
+	}
+}
+
+func TestExtractTests_EmptyBodyHasNilIdentifiers(t *testing.T) {
+	src := `def test_one():
+    pass
+`
+	got, err := ExtractTests(context.Background(), "/x.py", []byte(src))
+	if err != nil {
+		t.Fatalf("ExtractTests: %v", err)
+	}
+	if got[0].Identifiers != nil {
+		t.Fatalf("Identifiers = %v, want nil for `pass`-only body", got[0].Identifiers)
 	}
 }
 
