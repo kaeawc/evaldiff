@@ -237,6 +237,39 @@ def test_one(): pass
 	}
 }
 
+func TestAttachTouches_NamedAgentRefUsesLiteralName(t *testing.T) {
+	// When an Agent has a literal `name` kwarg the BehaviorRef Name
+	// surfaces it instead of the constructor#ordinal fallback, giving
+	// PR-comment renderers a human-readable identifier.
+	fs := vfs.NewMem(map[string]string{
+		"/repo/app/agents.py": `from agents import Agent
+researcher = Agent(name="researcher", model="m", instructions="research")
+writer     = Agent(model="m", instructions="write")
+`,
+		"/repo/tests/test_x.py": `from app.agents import researcher
+def test_one(): pass
+`,
+	})
+	idx, err := index.Build(context.Background(), fs, "/repo")
+	if err != nil {
+		t.Fatalf("index.Build: %v", err)
+	}
+	cov, err := Build(context.Background(), fs, "/repo")
+	if err != nil {
+		t.Fatalf("coverage.Build: %v", err)
+	}
+	if err := AttachTouches(context.Background(), fs, cov, idx); err != nil {
+		t.Fatalf("AttachTouches: %v", err)
+	}
+	want := []BehaviorRef{
+		{Kind: "agent", File: "app/agents.py", Name: "Agent#1"},    // unnamed → fallback
+		{Kind: "agent", File: "app/agents.py", Name: "researcher"}, // literal name kwarg
+	}
+	if !reflect.DeepEqual(cov.Tests[0].Touches, want) {
+		t.Fatalf("Touches:\n got: %+v\nwant: %+v", cov.Tests[0].Touches, want)
+	}
+}
+
 func TestAttachTouches_NilInputsAreNoOps(t *testing.T) {
 	if err := AttachTouches(context.Background(), nil, nil, nil); err != nil {
 		t.Fatalf("nil inputs should be no-op, got %v", err)

@@ -155,9 +155,15 @@ func containsField(fields []string, name string) bool {
 	return false
 }
 
-// indexAgents groups all agents by (file, ordinal-within-file). Iterating
-// the input file list gives ordinals in source order so they're stable
-// across builds of the same tree.
+// indexAgents groups all agents by stable identity. When the agent
+// declares a literal `name` kwarg the key is (file, name) — surviving
+// reorders and source-line shifts. Otherwise the fallback is
+// (file, ordinal-within-file), which is stable across vertical edits
+// in the same file but not across reorderings.
+//
+// Known limitation: an edit that adds an explicit name to a previously
+// unnamed agent flips identity from #ordinal to ::name and surfaces as
+// remove + add. The honest signal beats false matching.
 func indexAgents(idx *index.Index) map[string]index.Agent {
 	out := map[string]index.Agent{}
 	if idx == nil {
@@ -165,7 +171,7 @@ func indexAgents(idx *index.Index) map[string]index.Agent {
 	}
 	for _, f := range idx.Files {
 		for i, a := range f.Agents {
-			out[agentKey(f.File, i)] = a
+			out[agentKey(f.File, i, a)] = a
 		}
 	}
 	return out
@@ -184,7 +190,10 @@ func indexTools(idx *index.Index) map[string]index.Tool {
 	return out
 }
 
-func agentKey(file string, ordinal int) string {
+func agentKey(file string, ordinal int, a index.Agent) string {
+	if a.Name.IsLiteral() {
+		return file + "::" + a.Name.Str
+	}
 	return file + "#" + strconv.Itoa(ordinal)
 }
 
