@@ -193,6 +193,86 @@ def helper():
 			}},
 		},
 		{
+			name: "Anthropic SDK positional @tool(name, desc, schema)",
+			src: `@tool("add", "Add two numbers", {"a": float, "b": float})
+async def add_numbers(args):
+    """fallback docstring."""
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "add",
+				Description: Value{Kind: ValueLiteral, Str: "Add two numbers", Source: `"Add two numbers"`},
+				Schema:      Value{Kind: ValueDynamic, Source: `{"a": float, "b": float}`},
+				Params: []ToolParam{
+					{Name: "args"},
+				},
+			}},
+		},
+		{
+			name: "kwarg description overrides positional[1]",
+			src: `@tool("multiply", "old", description="multiply two numbers")
+def m(args):
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "multiply",
+				Description: Value{Kind: ValueLiteral, Str: "multiply two numbers", Source: `"multiply two numbers"`},
+				Params: []ToolParam{
+					{Name: "args"},
+				},
+			}},
+		},
+		{
+			name: "schema kwarg overrides positional[2]",
+			src: `@tool("add", "desc", {"a": int}, schema={"a": float})
+def f(args):
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "add",
+				Description: Value{Kind: ValueLiteral, Str: "desc", Source: `"desc"`},
+				Schema:      Value{Kind: ValueDynamic, Source: `{"a": float}`},
+				Params:      []ToolParam{{Name: "args"}},
+			}},
+		},
+		{
+			name: "input_schema kwarg accepted as alias",
+			src: `@tool(name="x", description="d", input_schema={"a": str})
+def f(args):
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "x",
+				Description: Value{Kind: ValueLiteral, Str: "d", Source: `"d"`},
+				Schema:      Value{Kind: ValueDynamic, Source: `{"a": str}`},
+				Params:      []ToolParam{{Name: "args"}},
+			}},
+		},
+		{
+			name: "bare @tool unaffected (no positional, no kwargs)",
+			src: `@tool
+def search(q: str):
+    """Search."""
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "search",
+				Description: Value{Kind: ValueLiteral, Str: "Search.", Source: `"""Search."""`},
+				Params: []ToolParam{
+					{Name: "q", Annotation: Value{Kind: ValueDynamic, Source: "str"}},
+				},
+			}},
+		},
+		{
 			name: "lowercase agent / Tool capital don't match",
 			src: `@Tool
 def x():

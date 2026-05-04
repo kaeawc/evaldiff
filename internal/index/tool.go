@@ -15,9 +15,10 @@ import (
 // resolves the decorator first; the signature is the fallback.
 type Tool struct {
 	File        string      `json:"file"`
-	Line        int         `json:"line"`        // 1-based line of the decorated definition
-	Name        string      `json:"name"`        // explicit @tool(name=...) kwarg, else the function name
-	Description Value       `json:"description"` // @tool(description=...), else the function docstring, else missing
+	Line        int         `json:"line"`             // 1-based line of the decorated definition
+	Name        string      `json:"name"`             // explicit @tool(name=...) kwarg or positional[0], else the function name
+	Description Value       `json:"description"`      // @tool(description=...) kwarg or positional[1], else docstring, else missing
+	Schema      Value       `json:"schema,omitempty"` // @tool(schema=...) kwarg or positional[2], else missing — the model-facing arg contract
 	Params      []ToolParam `json:"params,omitempty"`
 }
 
@@ -66,10 +67,11 @@ func ExtractTools(ctx context.Context, file string, src []byte) ([]Tool, error) 
 
 // toolDecorator describes a matched @tool decorator. CallNode is non-nil
 // when the decorator was called (e.g. @tool(name="x")); for a bare @tool
-// it stays nil and Kwargs is empty.
+// it stays nil, Kwargs is empty, and Positional is empty.
 type toolDecorator struct {
-	CallNode *sitter.Node
-	Kwargs   map[string]Value
+	CallNode   *sitter.Node
+	Kwargs     map[string]Value
+	Positional []Value
 }
 
 // findToolDecorator returns the first decorator on n whose target is
@@ -93,6 +95,9 @@ func findToolDecorator(n *sitter.Node, src []byte) *toolDecorator {
 			if argList := callNode.ChildByFieldName("arguments"); argList != nil {
 				forEachKwarg(argList, src, func(name string, v Value) {
 					dec.Kwargs[name] = v
+				})
+				forEachPositional(argList, src, func(v Value) {
+					dec.Positional = append(dec.Positional, v)
 				})
 			}
 		}
@@ -140,31 +145,77 @@ func isToolCallee(name string) bool {
 	return false
 }
 
-// nameKwargs and descriptionKwargs list the decorator kwargs that map to
-// Tool.Name / Tool.Description. The first literal hit wins, so when a
-// framework supports both `name` and `name_override` the canonical one
-// can be listed first.
+// nameKwargs / descriptionKwargs / schemaKwargs list the decorator kwargs
+// that map to the corresponding Tool field. The first literal hit wins
+// (for name/description) so framework aliases (name_override etc.) can
+// be listed alongside the canonical name.
 var (
 	nameKwargs        = []string{"name", "name_override"}
 	descriptionKwargs = []string{"description", "description_override"}
+	schemaKwargs      = []string{"schema", "input_schema"}
 )
 
 func buildTool(file string, decoratedDef, def *sitter.Node, dec *toolDecorator, src []byte) Tool {
-	name := nodeText(def.ChildByFieldName("name"), src)
-	if v, ok := firstLiteralKwarg(dec.Kwargs, nameKwargs); ok {
-		name = v.Str
-	}
-	desc, ok := firstLiteralKwarg(dec.Kwargs, descriptionKwargs)
-	if !ok {
-		desc = docstring(def, src)
-	}
 	return Tool{
 		File:        file,
 		Line:        int(decoratedDef.StartPoint().Row) + 1,
-		Name:        name,
-		Description: desc,
+		Name:        toolName(def, dec, src),
+		Description: toolDescription(def, dec, src),
+		Schema:      toolSchema(dec),
 		Params:      extractParams(def, src),
 	}
+}
+
+// toolName resolves Tool.Name in this priority order:
+//  1. literal `name` (or alias) kwarg
+//  2. literal positional[0] — matches Anthropic SDK's @tool("name", ...)
+//  3. the function name itself
+func toolName(def *sitter.Node, dec *toolDecorator, src []byte) string {
+	if v, ok := firstLiteralKwarg(dec.Kwargs, nameKwargs); ok {
+		return v.Str
+	}
+	if v, ok := positionalLiteral(dec, 0); ok {
+		return v.Str
+	}
+	return nodeText(def.ChildByFieldName("name"), src)
+}
+
+// toolDescription resolves Tool.Description in this priority order:
+//  1. literal `description` (or alias) kwarg
+//  2. literal positional[1] — matches Anthropic SDK's @tool("name", "desc", ...)
+//  3. the function docstring
+//  4. ValueMissing
+func toolDescription(def *sitter.Node, dec *toolDecorator, src []byte) Value {
+	if v, ok := firstLiteralKwarg(dec.Kwargs, descriptionKwargs); ok {
+		return v
+	}
+	if v, ok := positionalLiteral(dec, 1); ok {
+		return v
+	}
+	return docstring(def, src)
+}
+
+// toolSchema resolves Tool.Schema. Unlike name/description, schemas are
+// usually dict literals or builder calls — not strings — so we accept
+// any Value kind from positional[2] (raw source preserved) instead of
+// requiring a literal.
+func toolSchema(dec *toolDecorator) Value {
+	for _, k := range schemaKwargs {
+		if v, ok := dec.Kwargs[k]; ok {
+			return v
+		}
+	}
+	if len(dec.Positional) > 2 {
+		return dec.Positional[2]
+	}
+	return Value{}
+}
+
+func positionalLiteral(dec *toolDecorator, i int) (Value, bool) {
+	if i < len(dec.Positional) && dec.Positional[i].IsLiteral() {
+		return dec.Positional[i], true
+	}
+	return Value{}, false
 }
 
 // firstLiteralKwarg returns the first literal Value found by walking

@@ -97,6 +97,20 @@ func forEachKwarg(argList *sitter.Node, src []byte, fn func(name string, v Value
 	}
 }
 
+// forEachPositional invokes fn for every non-keyword argument under
+// argList, in source order, with its resolved Value. Used by callers
+// (like the @tool extractor) where positional argument order carries
+// meaning per the framework's API.
+func forEachPositional(argList *sitter.Node, src []byte, fn func(v Value)) {
+	for i := uint32(0); i < argList.NamedChildCount(); i++ {
+		arg := argList.NamedChild(int(i))
+		if arg.Type() == "keyword_argument" {
+			continue
+		}
+		fn(valueFromNode(arg, src))
+	}
+}
+
 // valueFromNode resolves a tree-sitter value node into a Value. String
 // literals become ValueLiteral with their interior content; everything else
 // is ValueDynamic with the raw source text preserved.
