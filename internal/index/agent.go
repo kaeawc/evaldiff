@@ -15,12 +15,12 @@ import (
 // ValueMissing so downstream stages can distinguish "unset" from "set to
 // the empty string".
 type Agent struct {
-	File        string // file path passed to ExtractAgents
-	Line        int    // 1-based line of the call expression
-	Constructor string // identifier or attribute text, e.g. "Agent" or "claude.Agent"
-	Model       Value
-	System      Value
-	Tools       Value
+	File        string `json:"file"`        // file path passed to ExtractAgents
+	Line        int    `json:"line"`        // 1-based line of the call expression
+	Constructor string `json:"constructor"` // identifier or attribute text, e.g. "Agent" or "claude.Agent"
+	Model       Value  `json:"model"`
+	System      Value  `json:"system"`
+	Tools       Value  `json:"tools"`
 }
 
 // ExtractAgents finds every Agent(...) (or qualified .Agent(...)) call in

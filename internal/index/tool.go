@@ -14,11 +14,11 @@ import (
 // could be derived from either the decorator or the function signature
 // resolves the decorator first; the signature is the fallback.
 type Tool struct {
-	File        string
-	Line        int    // 1-based line of the decorated definition
-	Name        string // explicit @tool(name=...) kwarg, else the function name
-	Description Value  // @tool(description=...), else the function docstring, else missing
-	Params      []ToolParam
+	File        string      `json:"file"`
+	Line        int         `json:"line"`        // 1-based line of the decorated definition
+	Name        string      `json:"name"`        // explicit @tool(name=...) kwarg, else the function name
+	Description Value       `json:"description"` // @tool(description=...), else the function docstring, else missing
+	Params      []ToolParam `json:"params,omitempty"`
 }
 
 // ToolParam is one parameter of a tool function. Annotation captures the
@@ -26,9 +26,9 @@ type Tool struct {
 // diff annotation changes without trying to evaluate forward refs.
 // Annotation.IsMissing means the parameter had no annotation at all.
 type ToolParam struct {
-	Name       string
-	Annotation Value
-	HasDefault bool
+	Name       string `json:"name"`
+	Annotation Value  `json:"annotation"`
+	HasDefault bool   `json:"has_default,omitempty"`
 }
 
 // ExtractTools finds every top-level @tool-decorated function in src and

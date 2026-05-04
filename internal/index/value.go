@@ -15,9 +15,9 @@ const (
 // Str is populated when Kind == ValueLiteral; Source is the raw source text
 // for both literal and dynamic values (handy for diffs and debugging).
 type Value struct {
-	Kind   ValueKind
-	Str    string
-	Source string
+	Kind   ValueKind `json:"kind"`
+	Str    string    `json:"str,omitempty"`
+	Source string    `json:"source,omitempty"`
 }
 
 func (v Value) IsLiteral() bool { return v.Kind == ValueLiteral }
