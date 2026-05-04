@@ -1,14 +1,21 @@
 // Command evaldiff statically answers "which evals will this PR break?"
 //
+// Headline form:
+//
+//	evaldiff <baseDir> <headDir>     Build behavior + coverage indexes for
+//	                                 head, diff against base, intersect,
+//	                                 rank, and print the EvalsAtRisk JSON.
+//	                                 Equivalent to `evaldiff risk ...`.
+//
 // Subcommands:
 //
-//	evaldiff index <dir>             Build the behavior index for a source
-//	                                 tree and print it as JSON.
-//	evaldiff coverage <dir>          Build the eval-coverage index (test
-//	                                 catalog) for a source tree.
-//	evaldiff diff <baseDir> <headDir>
-//	                                 Diff two source trees, emit the
-//	                                 structured changeset.
+//	evaldiff risk <baseDir> <headDir>   Same as the headline form.
+//	evaldiff index <dir>                Build the behavior index for a source
+//	                                    tree and print it as JSON.
+//	evaldiff coverage <dir>             Build the eval-coverage index (test
+//	                                    catalog) for a source tree.
+//	evaldiff diff <baseDir> <headDir>   Diff two source trees, emit the
+//	                                    structured changeset.
 package main
 
 import (
@@ -23,6 +30,7 @@ import (
 	"github.com/kaeawc/evaldiff/internal/coverage"
 	"github.com/kaeawc/evaldiff/internal/diff"
 	"github.com/kaeawc/evaldiff/internal/index"
+	"github.com/kaeawc/evaldiff/internal/rank"
 	"github.com/kaeawc/evaldiff/internal/vfs"
 )
 
@@ -48,6 +56,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runCoverage(rest, stdout)
 	case "diff":
 		return runDiff(rest, stdout)
+	case "risk":
+		return runRisk(rest, stdout)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return nil
@@ -55,6 +65,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stdout, version)
 		return nil
 	default:
+		// Headline shorthand: `evaldiff <baseDir> <headDir>` (no
+		// subcommand) is the same as `evaldiff risk ...`. Only fires
+		// when there are exactly two non-subcommand args, so a typo
+		// like `evaldiff indxe foo` still surfaces as "unknown command".
+		if len(args) == 2 {
+			return runRisk(args, stdout)
+		}
 		printUsage(stderr)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -145,10 +162,54 @@ func runDiff(args []string, stdout io.Writer) error {
 	return enc.Encode(diff.Diff(base, head))
 }
 
-func printUsage(w io.Writer) {
-	fmt.Fprintln(w, `usage: evaldiff <command> [args]
+// runRisk is the headline pipeline: build behavior indexes for both
+// trees, build coverage for head, attach Touches, diff, intersect, rank,
+// and emit JSON. Failures at any stage halt with a wrapped error.
+func runRisk(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("risk", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 2 {
+		return errors.New("usage: evaldiff [risk] <baseDir> <headDir>")
+	}
+	baseDir, headDir := rest[0], rest[1]
+	ctx := context.Background()
+	headFs := vfs.OS{}
 
-commands:
+	baseIdx, err := index.Build(ctx, vfs.OS{}, baseDir)
+	if err != nil {
+		return fmt.Errorf("build base index: %w", err)
+	}
+	headIdx, err := index.Build(ctx, headFs, headDir)
+	if err != nil {
+		return fmt.Errorf("build head index: %w", err)
+	}
+	cov, err := coverage.Build(ctx, headFs, headDir)
+	if err != nil {
+		return fmt.Errorf("build head coverage: %w", err)
+	}
+	if err := coverage.AttachTouches(ctx, headFs, cov, headIdx); err != nil {
+		return fmt.Errorf("attach touches: %w", err)
+	}
+	risk := rank.Compute(diff.Diff(baseIdx, headIdx), headIdx, cov)
+
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(risk)
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprintln(w, `usage: evaldiff <baseDir> <headDir>           — print evals at risk (headline)
+       evaldiff <subcommand> [args]
+
+subcommands:
+  risk  <baseDir> <headDir>
+                         Same as the headline shorthand. Builds behavior +
+                         coverage indexes for head, diffs against base,
+                         intersects, ranks, and prints EvalsAtRisk JSON.
   index [--hash] <dir>   Build behavior index for a source tree (JSON to stdout).
                          --hash prints only the content-addressable hash.
   coverage [--no-touches] <dir>
