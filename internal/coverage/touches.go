@@ -136,29 +136,67 @@ func dedupeRefs(in []BehaviorRef) []BehaviorRef {
 
 // importResolver maps a Python module name (dotted) to the matching file
 // path in the behavior index, or "" if no match. Supports package files
-// (foo/__init__.py) and module files (foo.py); does not follow relative
-// imports today.
+// (foo/__init__.py) and module files (foo.py), plus PEP 517 / "src layout"
+// projects where the package lives one directory deeper (e.g. src/foo/).
+// Does not follow relative imports today.
 type importResolver struct {
-	files map[string]struct{}
+	files    map[string]struct{}
+	srcRoots []string // path prefixes with trailing slash, e.g. "src/"
 }
+
+// knownSrcRoots are directories conventionally used as PEP 517 source
+// roots (the dir contains the package; the dir itself is not part of the
+// dotted module name). When the indexed tree contains files under one of
+// these prefixes, the resolver also tries module names against the
+// stripped path.
+var knownSrcRoots = []string{"src/"}
 
 func newImportResolver(idx *index.Index) *importResolver {
 	r := &importResolver{files: make(map[string]struct{}, len(idx.Files))}
+	seen := map[string]struct{}{}
 	for _, fe := range idx.Files {
 		r.files[fe.File] = struct{}{}
+		for _, root := range knownSrcRoots {
+			if strings.HasPrefix(fe.File, root) {
+				if _, ok := seen[root]; !ok {
+					seen[root] = struct{}{}
+					r.srcRoots = append(r.srcRoots, root)
+				}
+			}
+		}
 	}
 	return r
 }
 
+// resolve returns the path of the indexed file that "module" points at,
+// or "" when no candidate matches. Candidates are tried in order:
+//  1. <module>.py at root
+//  2. <module>/__init__.py at root
+//  3. for each detected src root, the same two under that prefix
+//
+// Root-level wins, so a real top-level module shadows one of the same
+// name that happens to also exist under src/.
 func (r *importResolver) resolve(module string) string {
 	if module == "" || strings.HasPrefix(module, ".") {
 		return ""
 	}
 	rel := strings.ReplaceAll(module, ".", "/")
-	if cand := rel + ".py"; r.has(cand) {
+	if hit := r.firstMatch(rel, ""); hit != "" {
+		return hit
+	}
+	for _, root := range r.srcRoots {
+		if hit := r.firstMatch(rel, root); hit != "" {
+			return hit
+		}
+	}
+	return ""
+}
+
+func (r *importResolver) firstMatch(rel, prefix string) string {
+	if cand := prefix + rel + ".py"; r.has(cand) {
 		return cand
 	}
-	if cand := rel + "/__init__.py"; r.has(cand) {
+	if cand := prefix + rel + "/__init__.py"; r.has(cand) {
 		return cand
 	}
 	return ""
