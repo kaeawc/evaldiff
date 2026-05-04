@@ -114,16 +114,21 @@ func TestRun_Diff_PrintsChangesetJSON(t *testing.T) {
 	}
 }
 
-func TestRun_Coverage_PrintsTestCatalog(t *testing.T) {
+func TestRun_Coverage_PrintsTestCatalogWithTouches(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "tests", "test_search.py"), `def test_one():
+	mustWrite(t, filepath.Join(dir, "app", "tools.py"), `from claude_agent_sdk import tool
+@tool
+def search(q: str): """Search."""
+`)
+	mustWrite(t, filepath.Join(dir, "tests", "test_search.py"), `from app.tools import search
+
+def test_one():
     pass
 
 class TestCls:
     def test_method(self):
         pass
 `)
-	mustWrite(t, filepath.Join(dir, "src", "app.py"), `def regular(): pass`+"\n")
 
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"coverage", dir}, &stdout, &stderr); err != nil {
@@ -132,6 +137,7 @@ class TestCls:
 	var got struct {
 		Tests []struct {
 			File, Name, Class string
+			Touches           []struct{ Kind, File, Name string }
 		}
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
@@ -145,6 +151,38 @@ class TestCls:
 	}
 	if got.Tests[1].Name != "test_method" || got.Tests[1].Class != "TestCls" {
 		t.Fatalf("second: %+v", got.Tests[1])
+	}
+	for i, te := range got.Tests {
+		if len(te.Touches) != 1 || te.Touches[0].Name != "search" {
+			t.Fatalf("test %d Touches = %+v, want [search]", i, te.Touches)
+		}
+	}
+}
+
+func TestRun_Coverage_NoTouchesFlag(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "app", "tools.py"), `from claude_agent_sdk import tool
+@tool
+def search(q: str): """Search."""
+`)
+	mustWrite(t, filepath.Join(dir, "tests", "test_x.py"), `from app.tools import search
+
+def test_one(): pass
+`)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"coverage", "--no-touches", dir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	var got struct {
+		Tests []struct {
+			Touches []struct{ Name string }
+		}
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, stdout.String())
+	}
+	if len(got.Tests) != 1 || len(got.Tests[0].Touches) != 0 {
+		t.Fatalf("expected empty Touches, got %+v", got.Tests)
 	}
 }
 

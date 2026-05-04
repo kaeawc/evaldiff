@@ -92,16 +92,28 @@ func runIndex(args []string, stdout io.Writer) error {
 func runCoverage(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("coverage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	noTouches := fs.Bool("no-touches", false, "skip the import-based behavior-ref mapping (faster, less useful)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return errors.New("usage: evaldiff coverage <dir>")
+		return errors.New("usage: evaldiff coverage [--no-touches] <dir>")
 	}
-	cov, err := coverage.Build(context.Background(), vfs.OS{}, rest[0])
+	dir := rest[0]
+	ctx := context.Background()
+	cov, err := coverage.Build(ctx, vfs.OS{}, dir)
 	if err != nil {
 		return err
+	}
+	if !*noTouches {
+		idx, err := index.Build(ctx, vfs.OS{}, dir)
+		if err != nil {
+			return fmt.Errorf("build behavior index: %w", err)
+		}
+		if err := coverage.AttachTouches(ctx, vfs.OS{}, cov, idx); err != nil {
+			return fmt.Errorf("attach touches: %w", err)
+		}
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
@@ -139,8 +151,11 @@ func printUsage(w io.Writer) {
 commands:
   index [--hash] <dir>   Build behavior index for a source tree (JSON to stdout).
                          --hash prints only the content-addressable hash.
-  coverage <dir>         Build the eval-coverage index (test catalog) for a
-                         source tree (JSON to stdout).
+  coverage [--no-touches] <dir>
+                         Build the eval-coverage index (test catalog) for a
+                         source tree (JSON to stdout). By default each test's
+                         Touches list is populated from imports of the same
+                         tree's behavior index. --no-touches skips that step.
   diff  <baseDir> <headDir>
                          Diff two source trees, print structured changeset (JSON to stdout).
   version                Print version and exit.
