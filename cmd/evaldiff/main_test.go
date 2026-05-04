@@ -123,11 +123,11 @@ def search(q: str): """Search."""
 	mustWrite(t, filepath.Join(dir, "tests", "test_search.py"), `from app.tools import search
 
 def test_one():
-    pass
+    search("q")
 
 class TestCls:
     def test_method(self):
-        pass
+        search("q")
 `)
 
 	var stdout, stderr bytes.Buffer
@@ -167,7 +167,8 @@ def search(q: str): """Search."""
 `)
 	mustWrite(t, filepath.Join(dir, "tests", "test_x.py"), `from app.tools import search
 
-def test_one(): pass
+def test_one():
+    search("q")
 `)
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"coverage", "--no-touches", dir}, &stdout, &stderr); err != nil {
@@ -206,14 +207,20 @@ researcher = Agent(name="researcher", model="opus", instructions="research")
 	// The test file goes only in head — that's the source of HEAD coverage.
 	mustWrite(t, filepath.Join(headDir, "tests", "test_pipeline.py"), `from app.agents import researcher
 
-def test_research(): pass
-def test_unrelated(): pass
+def test_research():
+    researcher.run("hi")
+
+def test_unrelated():
+    print("nothing")
 `)
 	// Match files between base and head tree shapes so paths line up.
 	mustWrite(t, filepath.Join(baseDir, "tests", "test_pipeline.py"), `from app.agents import researcher
 
-def test_research(): pass
-def test_unrelated(): pass
+def test_research():
+    researcher.run("hi")
+
+def test_unrelated():
+    print("nothing")
 `)
 
 	var stdout, stderr bytes.Buffer
@@ -240,8 +247,14 @@ def test_unrelated(): pass
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v\noutput: %s", err, stdout.String())
 	}
-	if len(got.Tests) != 2 {
-		t.Fatalf("Tests count = %d, want 2 (file-coarse mapping puts both tests at risk)", len(got.Tests))
+	// Per-test refinement (V7c): only test_research references the
+	// researcher agent; test_unrelated has no relevant identifiers and
+	// is correctly excluded from the at-risk set.
+	if len(got.Tests) != 1 {
+		t.Fatalf("Tests count = %d, want 1 (only test_research references researcher)", len(got.Tests))
+	}
+	if got.Tests[0].Test.Name != "test_research" {
+		t.Fatalf("at-risk test = %s, want test_research", got.Tests[0].Test.Name)
 	}
 	if got.Tests[0].Score != 1.0 || got.Tests[0].Affected[0].Ref.Name != "researcher" {
 		t.Fatalf("first test entry: %+v", got.Tests[0])
@@ -277,10 +290,12 @@ researcher = Agent(name="researcher", model="sonnet", instructions="research")
 researcher = Agent(name="researcher", model="opus", instructions="research")
 `)
 	mustWrite(t, filepath.Join(headDir, "tests", "test_pipeline.py"), `from app.agents import researcher
-def test_research(): pass
+def test_research():
+    researcher.run("hi")
 `)
 	mustWrite(t, filepath.Join(baseDir, "tests", "test_pipeline.py"), `from app.agents import researcher
-def test_research(): pass
+def test_research():
+    researcher.run("hi")
 `)
 
 	var stdout, stderr bytes.Buffer

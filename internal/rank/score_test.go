@@ -139,8 +139,8 @@ big = Agent(name="big", model="opus",   instructions="x")
 @function_tool
 def small(q: str): """Searchz."""
 `,
-		"/repo/tests/test_big.py":   `from app.agents import big` + "\n" + `def test_big_change(): pass` + "\n",
-		"/repo/tests/test_small.py": `from app.tools import small` + "\n" + `def test_small_change(): pass` + "\n",
+		"/repo/tests/test_big.py":   "from app.agents import big\ndef test_big_change():\n    big.run('hi')\n",
+		"/repo/tests/test_small.py": "from app.tools import small\ndef test_small_change():\n    small('q')\n",
 	})
 	baseIdx, _ := index.Build(ctx, base, "/repo")
 	headIdx, _ := index.Build(ctx, head, "/repo")
@@ -174,7 +174,8 @@ a = Agent(name="a", model="m1", instructions="x")
 a = Agent(name="a", model="m2", instructions="x")
 `,
 		"/repo/tests/test_a.py": `from app.agents import a
-def test_a(): pass
+def test_a():
+    a.run("hi")
 `,
 	})
 	baseIdx, _ := index.Build(ctx, base, "/repo")
