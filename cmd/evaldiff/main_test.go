@@ -114,6 +114,48 @@ func TestRun_Diff_PrintsChangesetJSON(t *testing.T) {
 	}
 }
 
+func TestRun_Coverage_PrintsTestCatalog(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "tests", "test_search.py"), `def test_one():
+    pass
+
+class TestCls:
+    def test_method(self):
+        pass
+`)
+	mustWrite(t, filepath.Join(dir, "src", "app.py"), `def regular(): pass`+"\n")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"coverage", dir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	var got struct {
+		Tests []struct {
+			File, Name, Class string
+		}
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, stdout.String())
+	}
+	if len(got.Tests) != 2 {
+		t.Fatalf("Tests count = %d, want 2; output: %s", len(got.Tests), stdout.String())
+	}
+	if got.Tests[0].Name != "test_one" || got.Tests[0].Class != "" {
+		t.Fatalf("first: %+v", got.Tests[0])
+	}
+	if got.Tests[1].Name != "test_method" || got.Tests[1].Class != "TestCls" {
+		t.Fatalf("second: %+v", got.Tests[1])
+	}
+}
+
+func TestRun_Coverage_RequiresOneDirArg(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"coverage"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
 func TestRun_Diff_RequiresTwoDirArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"diff", "/tmp"}, &stdout, &stderr)

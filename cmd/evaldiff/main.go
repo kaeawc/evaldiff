@@ -2,10 +2,13 @@
 //
 // Subcommands:
 //
-//	evaldiff index <dir>          Build the behavior index for a source tree
-//	                              and print it as JSON.
-//	evaldiff diff <base> <head>   (stub) Print evals affected between two
-//	                              revisions.
+//	evaldiff index <dir>             Build the behavior index for a source
+//	                                 tree and print it as JSON.
+//	evaldiff coverage <dir>          Build the eval-coverage index (test
+//	                                 catalog) for a source tree.
+//	evaldiff diff <baseDir> <headDir>
+//	                                 Diff two source trees, emit the
+//	                                 structured changeset.
 package main
 
 import (
@@ -17,6 +20,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/kaeawc/evaldiff/internal/coverage"
 	"github.com/kaeawc/evaldiff/internal/diff"
 	"github.com/kaeawc/evaldiff/internal/index"
 	"github.com/kaeawc/evaldiff/internal/vfs"
@@ -40,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	switch cmd {
 	case "index":
 		return runIndex(rest, stdout)
+	case "coverage":
+		return runCoverage(rest, stdout)
 	case "diff":
 		return runDiff(rest, stdout)
 	case "-h", "--help", "help":
@@ -83,6 +89,25 @@ func runIndex(args []string, stdout io.Writer) error {
 	return enc.Encode(idx)
 }
 
+func runCoverage(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("coverage", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("usage: evaldiff coverage <dir>")
+	}
+	cov, err := coverage.Build(context.Background(), vfs.OS{}, rest[0])
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(cov)
+}
+
 func runDiff(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -114,6 +139,8 @@ func printUsage(w io.Writer) {
 commands:
   index [--hash] <dir>   Build behavior index for a source tree (JSON to stdout).
                          --hash prints only the content-addressable hash.
+  coverage <dir>         Build the eval-coverage index (test catalog) for a
+                         source tree (JSON to stdout).
   diff  <baseDir> <headDir>
                          Diff two source trees, print structured changeset (JSON to stdout).
   version                Print version and exit.
