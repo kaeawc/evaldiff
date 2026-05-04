@@ -267,6 +267,52 @@ a = Agent(name="a", model="m", instructions="x")
 	}
 }
 
+func TestRun_Risk_MarkdownFormat(t *testing.T) {
+	baseDir := t.TempDir()
+	headDir := t.TempDir()
+	mustWrite(t, filepath.Join(baseDir, "app", "agents.py"), `from agents import Agent
+researcher = Agent(name="researcher", model="sonnet", instructions="research")
+`)
+	mustWrite(t, filepath.Join(headDir, "app", "agents.py"), `from agents import Agent
+researcher = Agent(name="researcher", model="opus", instructions="research")
+`)
+	mustWrite(t, filepath.Join(headDir, "tests", "test_pipeline.py"), `from app.agents import researcher
+def test_research(): pass
+`)
+	mustWrite(t, filepath.Join(baseDir, "tests", "test_pipeline.py"), `from app.agents import researcher
+def test_research(): pass
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"risk", "--format", "markdown", baseDir, headDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"### evaldiff:",
+		"#### `tests/test_pipeline.py::test_research`",
+		"**modified** agent `researcher`",
+		"fields: `model`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRun_Risk_UnknownFormatErrors(t *testing.T) {
+	baseDir := t.TempDir()
+	headDir := t.TempDir()
+	mustWrite(t, filepath.Join(baseDir, "x.py"), "x = 1\n")
+	mustWrite(t, filepath.Join(headDir, "x.py"), "x = 1\n")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"risk", "--format", "yaml", baseDir, headDir}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "unknown --format") {
+		t.Fatalf("expected unknown-format error, got %v", err)
+	}
+}
+
 func TestRun_Risk_RequiresTwoArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"risk", "/tmp"}, &stdout, &stderr)
