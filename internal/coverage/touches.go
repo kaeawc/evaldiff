@@ -69,12 +69,18 @@ func buildRefsByFile(idx *index.Index) map[string][]BehaviorRef {
 	return out
 }
 
-func agentRefName(a index.Agent, ordinal int) string {
+// AgentRefName returns the BehaviorRef.Name evaldiff uses for an agent:
+// its literal `name` kwarg when present (the SDK convention), else
+// constructor#ordinal. Exported so other packages computing the same
+// identity (e.g. internal/rank) stay in sync without re-deriving.
+func AgentRefName(a index.Agent, ordinal int) string {
 	if a.Name.IsLiteral() {
 		return a.Name.Str
 	}
 	return a.Constructor + "#" + strconv.Itoa(ordinal)
 }
+
+func agentRefName(a index.Agent, ordinal int) string { return AgentRefName(a, ordinal) }
 
 func groupTestsByFile(cov *Coverage) map[string][]int {
 	out := map[string][]int{}
