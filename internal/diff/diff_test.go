@@ -169,6 +169,101 @@ def f(a: str, b: int = 0):
 	}
 }
 
+func TestDiff_AgentSystemPromptChange_AttachesTextDiff(t *testing.T) {
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="m", system="You are a helpful assistant.")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="m", system="You are a very helpful assistant.")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Modified) != 1 {
+		t.Fatalf("Modified count: %+v", cs.Agents)
+	}
+	td := cs.Agents.Modified[0].SystemDiff
+	if td == nil {
+		t.Fatal("expected SystemDiff to be populated")
+	}
+	wantSegs := []TextSegment{
+		{Kind: SegmentEqual, Text: "You are a "},
+		{Kind: SegmentAdded, Text: "very "},
+		{Kind: SegmentEqual, Text: "helpful assistant."},
+	}
+	if !reflect.DeepEqual(td.Segments, wantSegs) {
+		t.Fatalf("segments: %+v", td.Segments)
+	}
+}
+
+func TestDiff_DynamicSystemValue_NoTextDiffAttached(t *testing.T) {
+	// Token diff requires both sides to be string literals. When one side
+	// is a function call the diff stage records the change in Fields but
+	// can't render a token-level delta — the consumer should see Fields=
+	// [system] with SystemDiff=nil.
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="m", system="static prompt")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="m", system=load_prompt("intro"))`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Modified) != 1 {
+		t.Fatalf("Modified count: %+v", cs.Agents)
+	}
+	mod := cs.Agents.Modified[0]
+	if !reflect.DeepEqual(mod.Fields, []string{"system"}) {
+		t.Fatalf("Fields = %v", mod.Fields)
+	}
+	if mod.SystemDiff != nil {
+		t.Fatalf("SystemDiff should be nil for dynamic value, got %+v", mod.SystemDiff)
+	}
+}
+
+func TestDiff_ToolDescriptionChange_AttachesTextDiff(t *testing.T) {
+	base := buildIdx(t, map[string]string{
+		"/repo/t.py": `@tool
+def f(q: str):
+    """Search."""
+`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/t.py": `@tool
+def f(q: str):
+    """Search the web."""
+`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Tools.Modified) != 1 {
+		t.Fatalf("Modified count: %+v", cs.Tools)
+	}
+	td := cs.Tools.Modified[0].DescriptionDiff
+	if td == nil {
+		t.Fatal("expected DescriptionDiff to be populated")
+	}
+	wantSegs := []TextSegment{
+		{Kind: SegmentEqual, Text: "Search"},
+		{Kind: SegmentAdded, Text: " the web"},
+		{Kind: SegmentEqual, Text: "."},
+	}
+	if !reflect.DeepEqual(td.Segments, wantSegs) {
+		t.Fatalf("segments: %+v", td.Segments)
+	}
+}
+
+func TestDiff_ModelOnlyChange_NoTextDiffAttached(t *testing.T) {
+	// Sanity: Fields=[model] should not attach SystemDiff.
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="sonnet", system="hi")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="opus", system="hi")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if cs.Agents.Modified[0].SystemDiff != nil {
+		t.Fatalf("SystemDiff should be nil when only model changed, got %+v",
+			cs.Agents.Modified[0].SystemDiff)
+	}
+}
+
 func TestDiff_NilIndexes_BehaveAsEmpty(t *testing.T) {
 	cs := Diff(nil, nil)
 	if !cs.IsEmpty() {

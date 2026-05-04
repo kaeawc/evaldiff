@@ -39,17 +39,23 @@ type ToolChanges struct {
 // AgentMod describes one agent that exists in both indexes but with at
 // least one differing extracted field. Fields lists the field names that
 // differ (e.g. "model", "system") so PR-comment renderers can summarize.
+// SystemDiff is populated when both Before.System and After.System are
+// string literals; it carries a token-level diff of the prompt text.
 type AgentMod struct {
-	Before index.Agent `json:"before"`
-	After  index.Agent `json:"after"`
-	Fields []string    `json:"fields"`
+	Before     index.Agent `json:"before"`
+	After      index.Agent `json:"after"`
+	Fields     []string    `json:"fields"`
+	SystemDiff *TextDiff   `json:"system_diff,omitempty"`
 }
 
-// ToolMod is the tool counterpart of AgentMod.
+// ToolMod is the tool counterpart of AgentMod. DescriptionDiff is
+// populated when both Before.Description and After.Description are
+// string literals.
 type ToolMod struct {
-	Before index.Tool `json:"before"`
-	After  index.Tool `json:"after"`
-	Fields []string   `json:"fields"`
+	Before          index.Tool `json:"before"`
+	After           index.Tool `json:"after"`
+	Fields          []string   `json:"fields"`
+	DescriptionDiff *TextDiff  `json:"description_diff,omitempty"`
 }
 
 // Diff returns the changeset describing how head differs from base. Agent
@@ -80,7 +86,11 @@ func diffAgents(base, head *index.Index, out *AgentChanges) {
 			out.Added = append(out.Added, a)
 		case hasB && hasA:
 			if fields := agentFieldDiff(b, a); len(fields) > 0 {
-				out.Modified = append(out.Modified, AgentMod{Before: b, After: a, Fields: fields})
+				mod := AgentMod{Before: b, After: a, Fields: fields}
+				if containsField(fields, "system") {
+					mod.SystemDiff = literalTextDiff(b.System, a.System)
+				}
+				out.Modified = append(out.Modified, mod)
 			}
 		}
 	}
@@ -100,10 +110,33 @@ func diffTools(base, head *index.Index, out *ToolChanges) {
 			out.Added = append(out.Added, a)
 		case hasB && hasA:
 			if fields := toolFieldDiff(b, a); len(fields) > 0 {
-				out.Modified = append(out.Modified, ToolMod{Before: b, After: a, Fields: fields})
+				mod := ToolMod{Before: b, After: a, Fields: fields}
+				if containsField(fields, "description") {
+					mod.DescriptionDiff = literalTextDiff(b.Description, a.Description)
+				}
+				out.Modified = append(out.Modified, mod)
 			}
 		}
 	}
+}
+
+// literalTextDiff returns a token-level TextDiff over two Values when
+// both are string literals; otherwise nil. Mixed literal/dynamic
+// changes can't be diffed token-wise without resolving the dynamic side.
+func literalTextDiff(b, a index.Value) *TextDiff {
+	if !b.IsLiteral() || !a.IsLiteral() {
+		return nil
+	}
+	return TextDiffOf(b.Str, a.Str)
+}
+
+func containsField(fields []string, name string) bool {
+	for _, f := range fields {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 // indexAgents groups all agents by (file, ordinal-within-file). Iterating
