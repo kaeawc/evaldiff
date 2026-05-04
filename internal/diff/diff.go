@@ -50,12 +50,15 @@ type AgentMod struct {
 
 // ToolMod is the tool counterpart of AgentMod. DescriptionDiff is
 // populated when both Before.Description and After.Description are
-// string literals.
+// string literals. ParamsDiff is populated whenever Fields contains
+// "params" (i.e. some structural change to the parameter list); a
+// reorder-only edit produces a non-nil but empty ParamsDiff.
 type ToolMod struct {
-	Before          index.Tool `json:"before"`
-	After           index.Tool `json:"after"`
-	Fields          []string   `json:"fields"`
-	DescriptionDiff *TextDiff  `json:"description_diff,omitempty"`
+	Before          index.Tool  `json:"before"`
+	After           index.Tool  `json:"after"`
+	Fields          []string    `json:"fields"`
+	DescriptionDiff *TextDiff   `json:"description_diff,omitempty"`
+	ParamsDiff      *ParamsDiff `json:"params_diff,omitempty"`
 }
 
 // Diff returns the changeset describing how head differs from base. Agent
@@ -99,8 +102,7 @@ func diffAgents(base, head *index.Index, out *AgentChanges) {
 func diffTools(base, head *index.Index, out *ToolChanges) {
 	beforeMap := indexTools(base)
 	afterMap := indexTools(head)
-	keys := unionKeys(beforeMap, afterMap)
-	for _, k := range keys {
+	for _, k := range unionKeys(beforeMap, afterMap) {
 		b, hasB := beforeMap[k]
 		a, hasA := afterMap[k]
 		switch {
@@ -109,15 +111,29 @@ func diffTools(base, head *index.Index, out *ToolChanges) {
 		case !hasB && hasA:
 			out.Added = append(out.Added, a)
 		case hasB && hasA:
-			if fields := toolFieldDiff(b, a); len(fields) > 0 {
-				mod := ToolMod{Before: b, After: a, Fields: fields}
-				if containsField(fields, "description") {
-					mod.DescriptionDiff = literalTextDiff(b.Description, a.Description)
-				}
+			if mod, ok := toolMod(b, a); ok {
 				out.Modified = append(out.Modified, mod)
 			}
 		}
 	}
+}
+
+// toolMod returns the ToolMod for two tools that share an identity, plus
+// ok=true if any field differs. It attaches DescriptionDiff and
+// ParamsDiff when the corresponding fields participate in the change.
+func toolMod(b, a index.Tool) (ToolMod, bool) {
+	fields := toolFieldDiff(b, a)
+	if len(fields) == 0 {
+		return ToolMod{}, false
+	}
+	mod := ToolMod{Before: b, After: a, Fields: fields}
+	if containsField(fields, "description") {
+		mod.DescriptionDiff = literalTextDiff(b.Description, a.Description)
+	}
+	if containsField(fields, "params") {
+		mod.ParamsDiff = paramsStructuralDiff(b.Params, a.Params)
+	}
+	return mod, true
 }
 
 // literalTextDiff returns a token-level TextDiff over two Values when
