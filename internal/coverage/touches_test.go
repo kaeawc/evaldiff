@@ -97,7 +97,8 @@ func TestImportResolver_NoSrcDir_NoExtraCandidates(t *testing.T) {
 
 func TestAttachTouches_SrcLayoutE2E(t *testing.T) {
 	// End-to-end: a test under tests/ imports `from agents import` and
-	// the package lives at src/agents/. Touches must populate.
+	// the package lives at src/agents/. Touches must populate when the
+	// test body actually references the imported name.
 	fs := vfs.NewMem(map[string]string{
 		"/repo/src/agents/__init__.py": `from agents import function_tool
 
@@ -106,7 +107,8 @@ def search(q: str): """Search."""
 `,
 		"/repo/tests/test_search.py": `from agents import search
 
-def test_one(): pass
+def test_one():
+    search("hello")
 `,
 	})
 	idx, err := index.Build(context.Background(), fs, "/repo")
@@ -128,25 +130,37 @@ def test_one(): pass
 	}
 }
 
-func TestAttachTouches_FileLevelMappingFromImports(t *testing.T) {
+func TestAttachTouches_PerTestRefinementByIdentifierUse(t *testing.T) {
+	// Per-test refinement (V7c) is "imports the test uses, file-coarse on
+	// the other side": referencing any name an import bound pulls in
+	// every behavior from that import's target file. This catches the
+	// "test calls a helper that internally uses agents" pattern.
+	//
+	// What's filtered: imports the test doesn't reference at all (the
+	// "test_unrelated" case below). What's still pulled in together:
+	// sibling behaviors in the same file (writer alongside researcher).
 	fs := vfs.NewMem(map[string]string{
-		"/repo/app/agents.py": `from claude_agent_sdk import Agent
-researcher = Agent(model="m", system="research")
-writer = Agent(model="m", system="write")
+		"/repo/app/agents.py": `from agents import Agent
+researcher = Agent(name="researcher", model="m", instructions="r")
+writer     = Agent(name="writer",     model="m", instructions="w")
 `,
-		"/repo/app/tools.py": `from claude_agent_sdk import tool
-@tool
+		"/repo/app/tools.py": `from agents import function_tool
+@function_tool
 def search(q: str): """Search."""
-@tool
+@function_tool
 def browse(url: str): """Browse."""
 `,
-		"/repo/tests/test_pipeline.py": `from app.agents import researcher
-from app.tools import search
+		"/repo/tests/test_pipeline.py": `from app.agents import researcher, writer
+from app.tools  import search, browse
 
-def test_one(): pass
-def test_two(): pass
-`,
-		"/repo/tests/test_other.py": `def test_unrelated(): pass
+def test_uses_agents_only():
+    researcher.run("hi")
+
+def test_uses_tools_only():
+    search("q")
+
+def test_unrelated():
+    print("nothing imported referenced")
 `,
 	})
 	idx, err := index.Build(context.Background(), fs, "/repo")
@@ -160,23 +174,75 @@ def test_two(): pass
 	if err := AttachTouches(context.Background(), fs, cov, idx); err != nil {
 		t.Fatalf("AttachTouches: %v", err)
 	}
-
-	wantPipelineTouches := []BehaviorRef{
-		{Kind: "agent", File: "app/agents.py", Name: "Agent#0"},
-		{Kind: "agent", File: "app/agents.py", Name: "Agent#1"},
+	agentsFile := []BehaviorRef{
+		{Kind: "agent", File: "app/agents.py", Name: "researcher"},
+		{Kind: "agent", File: "app/agents.py", Name: "writer"},
+	}
+	toolsFile := []BehaviorRef{
 		{Kind: "tool", File: "app/tools.py", Name: "browse"},
 		{Kind: "tool", File: "app/tools.py", Name: "search"},
 	}
-	if !reflect.DeepEqual(cov.Tests[1].Touches, wantPipelineTouches) {
-		t.Fatalf("test_one (idx 1) Touches:\n got: %+v\nwant: %+v", cov.Tests[1].Touches, wantPipelineTouches)
+	wantByName := map[string][]BehaviorRef{
+		// Reference a name from app.agents → every agent in that file.
+		"test_uses_agents_only": agentsFile,
+		// Reference a name from app.tools → every tool in that file.
+		"test_uses_tools_only": toolsFile,
+		// References nothing imported → no touches at all.
+		"test_unrelated": nil,
 	}
-	if !reflect.DeepEqual(cov.Tests[2].Touches, wantPipelineTouches) {
-		t.Fatalf("test_two (idx 2) Touches did not match test_one (file-coarse mapping):\n got: %+v\nwant: %+v",
-			cov.Tests[2].Touches, wantPipelineTouches)
+	for _, te := range cov.Tests {
+		want, ok := wantByName[te.Name]
+		if !ok {
+			t.Fatalf("unexpected test %q", te.Name)
+		}
+		if !reflect.DeepEqual(te.Touches, want) {
+			t.Fatalf("%s Touches:\n got: %+v\nwant: %+v", te.Name, te.Touches, want)
+		}
 	}
-	if cov.Tests[0].Touches != nil {
-		t.Fatalf("test_unrelated should have no touches, got %+v", cov.Tests[0].Touches)
+}
+
+func TestAttachTouches_HelperImportPullsInColocatedAgents(t *testing.T) {
+	// The motivating real-world case: a test imports a helper function
+	// from a file that also contains agents. The test references the
+	// helper, not the agent — but if the agent changes, the helper might
+	// break, so the test should be at risk.
+	fs := vfs.NewMem(map[string]string{
+		"/repo/tests/fixtures.py": `from agents import Agent
+
+bot = Agent(name="bot", model="m", instructions="x")
+
+def run_bot(msg):
+    return bot.run(msg)
+`,
+		"/repo/tests/test_helper.py": `from tests.fixtures import run_bot
+
+def test_via_helper():
+    result = run_bot("hi")
+`,
+	})
+	idx, err := index.Build(context.Background(), fs, "/repo")
+	if err != nil {
+		t.Fatalf("index.Build: %v", err)
 	}
+	cov, err := Build(context.Background(), fs, "/repo")
+	if err != nil {
+		t.Fatalf("coverage.Build: %v", err)
+	}
+	if err := AttachTouches(context.Background(), fs, cov, idx); err != nil {
+		t.Fatalf("AttachTouches: %v", err)
+	}
+	want := []BehaviorRef{
+		{Kind: "agent", File: "tests/fixtures.py", Name: "bot"},
+	}
+	for _, te := range cov.Tests {
+		if te.Name == "test_via_helper" {
+			if !reflect.DeepEqual(te.Touches, want) {
+				t.Fatalf("test_via_helper Touches:\n got: %+v\nwant: %+v", te.Touches, want)
+			}
+			return
+		}
+	}
+	t.Fatal("test_via_helper not found in coverage")
 }
 
 func TestAttachTouches_UnresolvedImportsAreSilentlySkipped(t *testing.T) {
@@ -188,7 +254,9 @@ func TestAttachTouches_UnresolvedImportsAreSilentlySkipped(t *testing.T) {
 		"/repo/tests/test_x.py": `import third_party_lib
 from missing_local import thing
 
-def test_one(): pass
+def test_one():
+    third_party_lib.do()
+    thing()
 `,
 	})
 	idx, err := index.Build(context.Background(), fs, "/repo")
@@ -215,7 +283,8 @@ def search(q: str): """Search."""
 `,
 		"/repo/tests/test_x.py": `from app import tools
 
-def test_one(): pass
+def test_one():
+    tools.search("q")
 `,
 	})
 	idx, err := index.Build(context.Background(), fs, "/repo")
@@ -247,7 +316,8 @@ researcher = Agent(name="researcher", model="m", instructions="research")
 writer     = Agent(model="m", instructions="write")
 `,
 		"/repo/tests/test_x.py": `from app.agents import researcher
-def test_one(): pass
+def test_one():
+    researcher.run("hi")
 `,
 	})
 	idx, err := index.Build(context.Background(), fs, "/repo")
@@ -261,9 +331,11 @@ def test_one(): pass
 	if err := AttachTouches(context.Background(), fs, cov, idx); err != nil {
 		t.Fatalf("AttachTouches: %v", err)
 	}
+	// Per V7c file-coarse-on-touches: referencing `researcher` pulls in
+	// the literal-named agent AND the unnamed sibling in the same file.
 	want := []BehaviorRef{
-		{Kind: "agent", File: "app/agents.py", Name: "Agent#1"},    // unnamed → fallback
-		{Kind: "agent", File: "app/agents.py", Name: "researcher"}, // literal name kwarg
+		{Kind: "agent", File: "app/agents.py", Name: "Agent#1"},
+		{Kind: "agent", File: "app/agents.py", Name: "researcher"},
 	}
 	if !reflect.DeepEqual(cov.Tests[0].Touches, want) {
 		t.Fatalf("Touches:\n got: %+v\nwant: %+v", cov.Tests[0].Touches, want)

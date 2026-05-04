@@ -13,11 +13,15 @@ import (
 )
 
 // AttachTouches mutates cov in place: for every test, populates Touches
-// with one BehaviorRef per Agent or Tool whose owning file is imported
-// by the test's enclosing module. Mapping is file-coarse — every test in
-// a module gets the same Touches union, since static analysis can't tell
-// which test in a file actually exercises which import. Per-test
-// refinement is a future slice.
+// with the BehaviorRefs from every imported file the test actually
+// references *some* name from.
+//
+// Per-test refinement is "imports the test uses, file-coarse on the
+// other side" — referencing a helper name from a file pulls in every
+// behavior defined in that file. This catches the dominant pattern of
+// tests calling a helper that internally uses agents/tools (the helper
+// name is what the test references; the agents are co-located with the
+// helper in the same module).
 //
 // Imports that don't resolve to a file in idx (third-party deps,
 // namespace packages, relative imports we don't follow yet) are silently
@@ -31,15 +35,55 @@ func AttachTouches(ctx context.Context, fs vfs.FS, cov *Coverage, idx *index.Ind
 	resolver := newImportResolver(idx)
 	byFile := groupTestsByFile(cov)
 	for file, testIxes := range byFile {
-		touches, err := touchesForFile(ctx, fs, cov.Root, file, resolver, refsByFile)
+		bindings, err := buildFileBindings(ctx, fs, cov.Root, file, resolver, refsByFile)
 		if err != nil {
 			return err
 		}
 		for _, i := range testIxes {
-			cov.Tests[i].Touches = touches
+			cov.Tests[i].Touches = touchesForTest(cov.Tests[i].Identifiers, bindings)
 		}
 	}
 	return nil
+}
+
+// fileBinding pairs the local-names a single import statement bound in
+// the test file (e.g. ["search", "browse"] for `from app.tools import
+// search, browse`) with the behaviors that import grants access to (all
+// behaviors defined in the resolved target file).
+type fileBinding struct {
+	names     []string
+	behaviors []BehaviorRef
+}
+
+// touchesForTest returns the union of behaviors from every binding
+// whose `names` list intersects with `identifiers` — i.e. for every
+// import the test references at least one name from, include all
+// behaviors in that import's target file. Result is deduped + sorted.
+func touchesForTest(identifiers []string, bindings []fileBinding) []BehaviorRef {
+	if len(identifiers) == 0 || len(bindings) == 0 {
+		return nil
+	}
+	idSet := make(map[string]struct{}, len(identifiers))
+	for _, id := range identifiers {
+		idSet[id] = struct{}{}
+	}
+	var touches []BehaviorRef
+	for _, b := range bindings {
+		if !anyInSet(b.names, idSet) {
+			continue
+		}
+		touches = append(touches, b.behaviors...)
+	}
+	return dedupeRefs(touches)
+}
+
+func anyInSet(names []string, set map[string]struct{}) bool {
+	for _, n := range names {
+		if _, ok := set[n]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // buildRefsByFile flattens an index into "given a file path, what
@@ -90,7 +134,28 @@ func groupTestsByFile(cov *Coverage) map[string][]int {
 	return out
 }
 
-func touchesForFile(ctx context.Context, fs vfs.FS, root, relPath string, resolver *importResolver, refsByFile map[string][]BehaviorRef) ([]BehaviorRef, error) {
+// buildFileBindings parses one test file's imports and returns one
+// fileBinding per import that resolves to a file with behaviors.
+// The local-names list captures every name the import statement bound
+// in the test file's namespace; the behaviors list is the full
+// behavior set from the resolved target file.
+//
+// Resolution rules:
+//   - `from X import a, b as c` → names=[a, c], behaviors = all in X
+//     (and tries each item as a submodule X.a, X.b — if it resolves,
+//     a separate binding is emitted with names=[a or c] and behaviors
+//     = all in the submodule).
+//   - `from X import *` → no local-names captured (we can't tell what
+//     was glob-imported); skipped today.
+//   - `import X` → names=[lastDotted(X)], behaviors = all in X.
+//   - `import X as Y` → names=[Y], behaviors = all in X.
+func buildFileBindings(
+	ctx context.Context,
+	fs vfs.FS,
+	root, relPath string,
+	resolver *importResolver,
+	refsByFile map[string][]BehaviorRef,
+) ([]fileBinding, error) {
 	src, err := fs.Read(filepath.Join(root, relPath))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", relPath, err)
@@ -99,26 +164,99 @@ func touchesForFile(ctx context.Context, fs vfs.FS, root, relPath string, resolv
 	if err != nil {
 		return nil, fmt.Errorf("imports %s: %w", relPath, err)
 	}
-	var touches []BehaviorRef
+	var out []fileBinding
 	for _, imp := range imports {
-		if target := resolver.resolve(imp.Module); target != "" {
-			touches = append(touches, refsByFile[target]...)
-		}
-		// For "from X import Y" each Y may be either a name defined inside
-		// module X *or* a submodule X.Y; Python's import system tries both.
-		// We do too, so `from app import tools` resolves to app/tools.py or
-		// app/tools/__init__.py even when "app" itself isn't a module file.
-		for _, item := range imp.Items {
-			if item.Name == "" {
-				continue
-			}
-			sub := imp.Module + "." + item.Name
-			if target := resolver.resolve(sub); target != "" {
-				touches = append(touches, refsByFile[target]...)
-			}
-		}
+		out = appendBindings(out, imp, resolver, refsByFile)
 	}
-	return dedupeRefs(touches), nil
+	return out, nil
+}
+
+func appendBindings(out []fileBinding, imp Import, resolver *importResolver, refsByFile map[string][]BehaviorRef) []fileBinding {
+	if len(imp.Items) == 0 {
+		return appendModuleImport(out, imp, resolver, refsByFile)
+	}
+	return appendFromImport(out, imp, resolver, refsByFile)
+}
+
+// appendModuleImport handles `import X` and `import X as Y` — the
+// locally-bound name is the alias (or the last dotted component of X)
+// and grants access to every behavior in module X.
+func appendModuleImport(out []fileBinding, imp Import, resolver *importResolver, refsByFile map[string][]BehaviorRef) []fileBinding {
+	target := resolver.resolve(imp.Module)
+	if target == "" {
+		return out
+	}
+	alias := imp.ModuleAlias
+	if alias == "" {
+		alias = lastDotted(imp.Module)
+	}
+	if alias == "" {
+		return out
+	}
+	if behaviors := refsByFile[target]; len(behaviors) > 0 {
+		return append(out, fileBinding{names: []string{alias}, behaviors: behaviors})
+	}
+	return out
+}
+
+// appendFromImport handles `from X import a, b as c`. Items that
+// resolve as submodules (X.a) get their own binding; the rest are
+// grouped under one binding pointing at module X (every shared local-
+// name reaches the same target file).
+func appendFromImport(out []fileBinding, imp Import, resolver *importResolver, refsByFile map[string][]BehaviorRef) []fileBinding {
+	parentNames := []string{}
+	for _, item := range imp.Items {
+		local := localItemName(item)
+		if local == "" {
+			continue
+		}
+		if added, ok := bindAsSubmodule(imp.Module, item.Name, local, resolver, refsByFile); ok {
+			out = append(out, added)
+			continue
+		}
+		parentNames = append(parentNames, local)
+	}
+	if len(parentNames) == 0 {
+		return out
+	}
+	target := resolver.resolve(imp.Module)
+	if target == "" {
+		return out
+	}
+	if behaviors := refsByFile[target]; len(behaviors) > 0 {
+		out = append(out, fileBinding{names: parentNames, behaviors: behaviors})
+	}
+	return out
+}
+
+// bindAsSubmodule returns a binding for `from X import item` when
+// X.item resolves as its own module file (and that file has behaviors).
+// Returns ok=false otherwise so the caller falls through to the
+// parent-module binding.
+func bindAsSubmodule(module, itemName, local string, resolver *importResolver, refsByFile map[string][]BehaviorRef) (fileBinding, bool) {
+	subTarget := resolver.resolve(module + "." + itemName)
+	if subTarget == "" {
+		return fileBinding{}, false
+	}
+	behaviors := refsByFile[subTarget]
+	if len(behaviors) == 0 {
+		return fileBinding{}, false
+	}
+	return fileBinding{names: []string{local}, behaviors: behaviors}, true
+}
+
+func localItemName(item ImportItem) string {
+	if item.Alias != "" {
+		return item.Alias
+	}
+	return item.Name
+}
+
+func lastDotted(module string) string {
+	if i := strings.LastIndex(module, "."); i >= 0 {
+		return module[i+1:]
+	}
+	return module
 }
 
 // dedupeRefs removes duplicate BehaviorRefs and sorts the result by

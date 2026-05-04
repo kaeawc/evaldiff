@@ -3,6 +3,7 @@ package rank
 import (
 	"context"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/kaeawc/evaldiff/internal/coverage"
@@ -56,7 +57,8 @@ researcher = Agent(name="researcher", model="opus", instructions="research")
 		},
 		tests: map[string]string{
 			"/repo/tests/test_pipeline.py": `from app.agents import researcher
-def test_uses_researcher(): pass
+def test_uses_researcher():
+    researcher.run("hi")
 `,
 		},
 	}
@@ -102,7 +104,8 @@ def browse(url: str): """Browse."""
 		},
 		tests: map[string]string{
 			"/repo/tests/test_x.py": `from app.tools import search, browse
-def test_browse(): pass
+def test_browse():
+    browse("u"); search("q")
 `,
 		},
 	}
@@ -120,7 +123,11 @@ def test_browse(): pass
 	}
 }
 
-func TestCompute_TestNotTouchingAnyChangeIsNotInResult(t *testing.T) {
+func TestCompute_OnlyReferencingTestsAreAtRisk(t *testing.T) {
+	// Under per-test refinement, a test is at risk only if a changed
+	// behavior's imported name appears in its body. test_b references b
+	// (which changed model), test_a_via_b imports both a and b but only
+	// uses b in the body — and a is what changed.
 	f := twoTreeFixture{
 		base: map[string]string{
 			"/repo/app/agents.py": `from agents import Agent
@@ -131,17 +138,25 @@ b = Agent(name="b", model="m", instructions="y")
 		head: map[string]string{
 			"/repo/app/agents.py": `from agents import Agent
 a = Agent(name="a", model="m2", instructions="x")
-b = Agent(name="b", model="m",  instructions="y")
+b = Agent(name="b", model="m2", instructions="y")
 `,
 		},
 		tests: map[string]string{
-			// Imports b only — not a — but file-coarse mapping means it
-			// touches both. So this test IS at risk after all.
+			// References b (which changed model) — at risk.
 			"/repo/tests/test_b.py": `from app.agents import b
-def test_b(): pass
+def test_b():
+    b.run("hi")
 `,
-			// Imports nothing related — should not appear in result.
-			"/repo/tests/test_unrelated.py": `def test_x(): pass`,
+			// Imports both but only references a — touches a (which also
+			// changed) — at risk.
+			"/repo/tests/test_a.py": `from app.agents import a, b
+def test_a_only():
+    a.run("hi")
+`,
+			// Imports nothing related — not at risk.
+			"/repo/tests/test_unrelated.py": `def test_x():
+    print("nothing imported")
+`,
 		},
 	}
 	base, head, cov := f.build(t)
@@ -152,8 +167,10 @@ def test_b(): pass
 	for _, r := range risk.Tests {
 		names = append(names, r.Test.Name)
 	}
-	if !reflect.DeepEqual(names, []string{"test_b"}) {
-		t.Fatalf("at-risk test names = %v, want [test_b]", names)
+	sort.Strings(names)
+	want := []string{"test_a_only", "test_b"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("at-risk test names = %v, want %v", names, want)
 	}
 }
 
@@ -189,7 +206,8 @@ func TestCompute_NoChangesYieldsEmptyResult(t *testing.T) {
 a = Agent(name="a", model="m", instructions="x")
 `,
 		"/repo/tests/test_x.py": `from app.agents import a
-def test_a(): pass
+def test_a():
+    a.run("hi")
 `,
 	}
 	f := twoTreeFixture{base: src, head: src}
@@ -230,7 +248,8 @@ def search(q: str): """Search the web."""
 		tests: map[string]string{
 			"/repo/tests/test_pipeline.py": `from app.agents import a
 from app.tools  import search
-def test_pipeline(): pass
+def test_pipeline():
+    a.run("hi"); search("q")
 `,
 		},
 	}
