@@ -111,15 +111,36 @@ func forEachPositional(argList *sitter.Node, src []byte, fn func(v Value)) {
 	}
 }
 
-// valueFromNode resolves a tree-sitter value node into a Value. String
-// literals become ValueLiteral with their interior content; everything else
-// is ValueDynamic with the raw source text preserved.
+// valueFromNode resolves a tree-sitter value node into a Value.
+// Recognized as literals:
+//   - "string"               – plain quoted string
+//   - "concatenated_string"  – Python's implicit-concatenation form,
+//     e.g. ("hello " "world") or two string
+//     literals separated only by whitespace
+//   - "parenthesized_expression" wrapping either of the above
+//
+// Everything else is ValueDynamic with the raw source text preserved.
+// Source always reflects the original (parens included) so diff
+// renderers see what the developer wrote, while Str is the collapsed
+// payload suitable for token-level prompt comparison.
 func valueFromNode(n *sitter.Node, src []byte) Value {
 	source := nodeText(n, src)
-	if n.Type() == "string" {
-		return Value{Kind: ValueLiteral, Str: stringContent(n, src), Source: source}
+	inner := unwrapParens(n)
+	if inner != nil && (inner.Type() == "string" || inner.Type() == "concatenated_string") {
+		return Value{Kind: ValueLiteral, Str: stringContent(inner, src), Source: source}
 	}
 	return Value{Kind: ValueDynamic, Source: source}
+}
+
+// unwrapParens descends through parenthesized_expression wrappers that
+// contain a single inner expression, returning the innermost node. A
+// parenthesized expression with multiple children (rare; tuples shape
+// differently) is returned unchanged.
+func unwrapParens(n *sitter.Node) *sitter.Node {
+	for n != nil && n.Type() == "parenthesized_expression" && n.NamedChildCount() == 1 {
+		n = n.NamedChild(0)
+	}
+	return n
 }
 
 // stringContent extracts the body of a Python string literal node, joining
