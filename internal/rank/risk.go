@@ -30,17 +30,22 @@ type EvalsAtRisk struct {
 
 // EvalRisk pairs a test with the changed behaviors it touches. A test
 // appears here at most once even if it touches several changed behaviors.
+// Score is the sum of per-Affected BehaviorChange scores; EvalsAtRisk
+// sorts Tests by Score descending.
 type EvalRisk struct {
 	Test     coverage.TestEntry `json:"test"`
 	Affected []BehaviorChange   `json:"affected"`
+	Score    float64            `json:"score"`
 }
 
 // BehaviorChange is one (Ref, Kind) pair: which behavior changed and how.
+// Score quantifies the change magnitude (see score.go for the formula).
 // AgentMod / ToolMod carry the original diff entry so PR-comment
 // renderers can show the prompt or schema delta without re-diffing.
 type BehaviorChange struct {
 	Ref      BehaviorRef    `json:"ref"`
 	Kind     ChangeKind     `json:"kind"`
+	Score    float64        `json:"score"`
 	AgentMod *diff.AgentMod `json:"agent_mod,omitempty"`
 	ToolMod  *diff.ToolMod  `json:"tool_mod,omitempty"`
 }
@@ -80,6 +85,16 @@ func Compute(cs *diff.Changeset, headIdx *index.Index, headCov *coverage.Coverag
 		}
 	}
 	out.Removed = removedBehaviors(cs)
+	sort.Slice(out.Tests, func(i, j int) bool {
+		if out.Tests[i].Score != out.Tests[j].Score {
+			return out.Tests[i].Score > out.Tests[j].Score
+		}
+		// Stable tiebreaker: file then line.
+		if out.Tests[i].Test.File != out.Tests[j].Test.File {
+			return out.Tests[i].Test.File < out.Tests[j].Test.File
+		}
+		return out.Tests[i].Test.Line < out.Tests[j].Test.Line
+	})
 	return out
 }
 
@@ -89,6 +104,10 @@ func matchTest(test coverage.TestEntry, changes map[coverage.BehaviorRef][]Behav
 		if matched, ok := changes[touch]; ok {
 			risk.Affected = append(risk.Affected, matched...)
 		}
+	}
+	for i := range risk.Affected {
+		risk.Affected[i].Score = scoreChange(risk.Affected[i])
+		risk.Score += risk.Affected[i].Score
 	}
 	return risk
 }
