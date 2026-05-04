@@ -142,6 +142,57 @@ def helper():
 			want: nil,
 		},
 		{
+			name: "bare @function_tool extracted (OpenAI Agents SDK)",
+			src: `from agents import function_tool
+
+@function_tool
+def get_weather(city: str) -> str:
+    """Look up weather."""
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        3,
+				Name:        "get_weather",
+				Description: Value{Kind: ValueLiteral, Str: "Look up weather.", Source: `"""Look up weather."""`},
+				Params: []ToolParam{
+					{Name: "city", Annotation: Value{Kind: ValueDynamic, Source: "str"}},
+				},
+			}},
+		},
+		{
+			name: "@function_tool with name_override / description_override kwargs",
+			src: `@function_tool(name_override="weather", description_override="Look up the current weather.")
+def get_weather(city: str):
+    """fallback docstring."""
+    ...
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        1,
+				Name:        "weather",
+				Description: Value{Kind: ValueLiteral, Str: "Look up the current weather.", Source: `"Look up the current weather."`},
+				Params: []ToolParam{
+					{Name: "city", Annotation: Value{Kind: ValueDynamic, Source: "str"}},
+				},
+			}},
+		},
+		{
+			name: "@agents.function_tool qualified",
+			src: `import agents
+
+@agents.function_tool
+def helper():
+    """help."""
+`,
+			want: []Tool{{
+				File:        "/x.py",
+				Line:        3,
+				Name:        "helper",
+				Description: Value{Kind: ValueLiteral, Str: "help.", Source: `"""help."""`},
+			}},
+		},
+		{
 			name: "lowercase agent / Tool capital don't match",
 			src: `@Tool
 def x():

@@ -122,20 +122,40 @@ func decoratorCallee(expr *sitter.Node) (callee, call *sitter.Node) {
 	return expr, nil
 }
 
+// toolDecoratorNames are the unqualified decorator names recognized as
+// declaring a tool. Both bare and dotted-suffix forms match (e.g. `tool`,
+// `mcp.tool`, `function_tool`, `agents.function_tool`). Adding a new
+// framework here unlocks its tools without other changes.
+var toolDecoratorNames = []string{"tool", "function_tool"}
+
 func isToolCallee(name string) bool {
-	if name == "tool" {
-		return true
+	for _, want := range toolDecoratorNames {
+		if name == want {
+			return true
+		}
+		if strings.HasSuffix(name, "."+want) {
+			return true
+		}
 	}
-	return strings.HasSuffix(name, ".tool")
+	return false
 }
+
+// nameKwargs and descriptionKwargs list the decorator kwargs that map to
+// Tool.Name / Tool.Description. The first literal hit wins, so when a
+// framework supports both `name` and `name_override` the canonical one
+// can be listed first.
+var (
+	nameKwargs        = []string{"name", "name_override"}
+	descriptionKwargs = []string{"description", "description_override"}
+)
 
 func buildTool(file string, decoratedDef, def *sitter.Node, dec *toolDecorator, src []byte) Tool {
 	name := nodeText(def.ChildByFieldName("name"), src)
-	if v, ok := dec.Kwargs["name"]; ok && v.IsLiteral() {
+	if v, ok := firstLiteralKwarg(dec.Kwargs, nameKwargs); ok {
 		name = v.Str
 	}
-	desc := dec.Kwargs["description"]
-	if desc.IsMissing() {
+	desc, ok := firstLiteralKwarg(dec.Kwargs, descriptionKwargs)
+	if !ok {
 		desc = docstring(def, src)
 	}
 	return Tool{
@@ -145,6 +165,18 @@ func buildTool(file string, decoratedDef, def *sitter.Node, dec *toolDecorator, 
 		Description: desc,
 		Params:      extractParams(def, src),
 	}
+}
+
+// firstLiteralKwarg returns the first literal Value found by walking
+// keys in order. ok is false when none of the requested kwargs is
+// present as a literal.
+func firstLiteralKwarg(kw map[string]Value, keys []string) (Value, bool) {
+	for _, k := range keys {
+		if v, ok := kw[k]; ok && v.IsLiteral() {
+			return v, true
+		}
+	}
+	return Value{}, false
 }
 
 // docstring returns the function's docstring as a ValueLiteral, or
