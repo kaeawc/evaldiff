@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -79,14 +80,45 @@ func TestRun_Index_RequiresExactlyOneDirArg(t *testing.T) {
 	}
 }
 
-func TestRun_Diff_StubReturnsError(t *testing.T) {
+func TestRun_Diff_PrintsChangesetJSON(t *testing.T) {
+	baseDir := t.TempDir()
+	headDir := t.TempDir()
+	mustWrite(t, filepath.Join(baseDir, "a.py"), `Agent(model="sonnet")`+"\n")
+	mustWrite(t, filepath.Join(headDir, "a.py"), `Agent(model="opus")`+"\n")
+
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"diff", "main", "feature"}, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected stub error")
+	if err := run([]string{"diff", baseDir, headDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Fatalf("error = %q, want it to mention not implemented", err)
+	var got struct {
+		Agents struct {
+			Modified []struct {
+				Fields []string
+				Before struct{ Model struct{ Str string } }
+				After  struct{ Model struct{ Str string } }
+			}
+		}
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, stdout.String())
+	}
+	if len(got.Agents.Modified) != 1 {
+		t.Fatalf("Modified count = %d, want 1; output: %s", len(got.Agents.Modified), stdout.String())
+	}
+	mod := got.Agents.Modified[0]
+	if !reflect.DeepEqual(mod.Fields, []string{"model"}) {
+		t.Fatalf("Fields = %v, want [model]", mod.Fields)
+	}
+	if mod.Before.Model.Str != "sonnet" || mod.After.Model.Str != "opus" {
+		t.Fatalf("model before/after: %q / %q", mod.Before.Model.Str, mod.After.Model.Str)
+	}
+}
+
+func TestRun_Diff_RequiresTwoDirArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"diff", "/tmp"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("expected usage error, got %v", err)
 	}
 }
 
