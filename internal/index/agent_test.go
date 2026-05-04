@@ -132,6 +132,52 @@ my.agent(model="z")
 			}},
 		},
 		{
+			name: "adjacent-string concat in parens collapses to literal",
+			src: `Agent(
+    name="x",
+    system=(
+        "You are a customer support agent. "
+        "Always escalate billing questions."
+    ),
+)
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Name:        Value{Kind: ValueLiteral, Str: "x", Source: `"x"`},
+				System: Value{
+					Kind:   ValueLiteral,
+					Str:    "You are a customer support agent. Always escalate billing questions.",
+					Source: "(\n        \"You are a customer support agent. \"\n        \"Always escalate billing questions.\"\n    )",
+				},
+			}},
+		},
+		{
+			name: "no-paren concatenated_string also collapses",
+			src: `Agent(name="x", system="hello " "world")
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Name:        Value{Kind: ValueLiteral, Str: "x", Source: `"x"`},
+				System:      Value{Kind: ValueLiteral, Str: "hello world", Source: `"hello " "world"`},
+			}},
+		},
+		{
+			name: "parenthesized single string still extracts as literal",
+			src: `Agent(name="x", system=("just one"))
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Name:        Value{Kind: ValueLiteral, Str: "x", Source: `"x"`},
+				System:      Value{Kind: ValueLiteral, Str: "just one", Source: `("just one")`},
+			}},
+		},
+		{
 			name: "no Agent calls in file → empty result",
 			src:  "x = 1\n",
 			want: nil,
