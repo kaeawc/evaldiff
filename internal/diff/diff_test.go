@@ -92,9 +92,10 @@ Agent(model="m")`,
 	}
 }
 
-func TestDiff_AgentMovedAcrossFiles_AppearsAsRemoveAndAdd(t *testing.T) {
-	// File-keyed identity does not match cross-file moves. Documenting that
-	// limitation in a test so it's explicit, not surprising.
+func TestDiff_UnnamedAgentMovedAcrossFiles_AppearsAsRemoveAndAdd(t *testing.T) {
+	// Cross-file move reconciliation requires a literal name kwarg —
+	// unnamed agents have no stable identity to match across files,
+	// so they correctly surface as remove + add.
 	base := buildIdx(t, map[string]string{
 		"/repo/old.py": `Agent(model="m")`,
 	}, "/repo")
@@ -103,10 +104,121 @@ func TestDiff_AgentMovedAcrossFiles_AppearsAsRemoveAndAdd(t *testing.T) {
 	}, "/repo")
 	cs := Diff(base, head)
 	if len(cs.Agents.Added) != 1 || len(cs.Agents.Removed) != 1 {
-		t.Fatalf("expected 1 added + 1 removed, got %+v", cs.Agents)
+		t.Fatalf("expected 1 added + 1 removed for unnamed move, got %+v", cs.Agents)
 	}
 	if len(cs.Agents.Modified) != 0 {
 		t.Fatalf("did not expect Modified, got %+v", cs.Agents.Modified)
+	}
+}
+
+func TestDiff_NamedAgentMovedAcrossFiles_BecomesModifiedWithFileField(t *testing.T) {
+	base := buildIdx(t, map[string]string{
+		"/repo/old.py": `Agent(name="researcher", model="m", instructions="research")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/new.py": `Agent(name="researcher", model="m", instructions="research")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Added) != 0 || len(cs.Agents.Removed) != 0 {
+		t.Fatalf("named cross-file move should not surface as add/remove, got %+v", cs.Agents)
+	}
+	if len(cs.Agents.Modified) != 1 {
+		t.Fatalf("expected 1 Modified, got %+v", cs.Agents)
+	}
+	mod := cs.Agents.Modified[0]
+	if !reflect.DeepEqual(mod.Fields, []string{"file"}) {
+		t.Fatalf("Fields = %v, want [file] (no other kwargs changed)", mod.Fields)
+	}
+	if mod.Before.File != "old.py" || mod.After.File != "new.py" {
+		t.Fatalf("Before/After files: %q / %q", mod.Before.File, mod.After.File)
+	}
+}
+
+func TestDiff_NamedAgentMovedAndEdited_FieldsIncludesFileAndModel(t *testing.T) {
+	// Move + model edit in the same change. Reconcile should emit
+	// one Modified entry with both file and model in Fields.
+	base := buildIdx(t, map[string]string{
+		"/repo/old.py": `Agent(name="researcher", model="sonnet", instructions="research")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/new.py": `Agent(name="researcher", model="opus",   instructions="research")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Modified) != 1 {
+		t.Fatalf("expected 1 Modified, got %+v", cs.Agents)
+	}
+	got := cs.Agents.Modified[0].Fields
+	want := []string{"file", "model"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Fields = %v, want %v", got, want)
+	}
+}
+
+func TestDiff_AmbiguousNamedAgentMove_StaysAsRemoveAndAdd(t *testing.T) {
+	// Two agents named "x" on the head side — we can't tell which
+	// removed agent maps to which, so neither is reconciled.
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="x", model="m")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/b.py": `Agent(name="x", model="m")`,
+		"/repo/c.py": `Agent(name="x", model="m")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Added) != 2 || len(cs.Agents.Removed) != 1 || len(cs.Agents.Modified) != 0 {
+		t.Fatalf("ambiguous case should stay unreconciled, got %+v", cs.Agents)
+	}
+}
+
+func TestDiff_ToolMovedAcrossFiles_BecomesModifiedWithFileField(t *testing.T) {
+	base := buildIdx(t, map[string]string{
+		"/repo/old.py": `@tool
+def search(q: str): """Search."""
+`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/new.py": `@tool
+def search(q: str): """Search."""
+`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Tools.Added) != 0 || len(cs.Tools.Removed) != 0 {
+		t.Fatalf("tool move should not surface as add/remove, got %+v", cs.Tools)
+	}
+	if len(cs.Tools.Modified) != 1 {
+		t.Fatalf("expected 1 Modified, got %+v", cs.Tools)
+	}
+	mod := cs.Tools.Modified[0]
+	if !reflect.DeepEqual(mod.Fields, []string{"file"}) {
+		t.Fatalf("Fields = %v, want [file]", mod.Fields)
+	}
+	if mod.Before.File != "old.py" || mod.After.File != "new.py" {
+		t.Fatalf("Before/After files: %q / %q", mod.Before.File, mod.After.File)
+	}
+}
+
+func TestDiff_ToolMovedAndEdited_FieldsIncludesFileAndDescription(t *testing.T) {
+	base := buildIdx(t, map[string]string{
+		"/repo/old.py": `@tool
+def search(q: str): """Search."""
+`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/new.py": `@tool
+def search(q: str): """Search the web."""
+`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Tools.Modified) != 1 {
+		t.Fatalf("expected 1 Modified, got %+v", cs.Tools)
+	}
+	mod := cs.Tools.Modified[0]
+	want := []string{"file", "description"}
+	if !reflect.DeepEqual(mod.Fields, want) {
+		t.Fatalf("Fields = %v, want %v", mod.Fields, want)
+	}
+	if mod.DescriptionDiff == nil {
+		t.Fatal("expected DescriptionDiff to be attached to the move")
 	}
 }
 

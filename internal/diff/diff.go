@@ -72,6 +72,8 @@ func Diff(base, head *index.Index) *Changeset {
 	cs := &Changeset{}
 	diffAgents(base, head, &cs.Agents)
 	diffTools(base, head, &cs.Tools)
+	reconcileAgentMoves(&cs.Agents)
+	reconcileToolMoves(&cs.Tools)
 	return cs
 }
 
