@@ -1,0 +1,55 @@
+name: "evaldiff"
+
+# Run on every PR. Builds the evaldiff binary from the PR's own source,
+# computes the EvalsAtRisk between the PR base and head, renders the
+# markdown report, and sticky-comments it on the PR.
+#
+# Dogfood: this repo has no Python source, so the comment will always
+# read "no evals at risk" — that's intentional. The point is to exercise
+# the full plumbing (checkout + worktree + build + run + comment) so
+# users adopting evaldiff see a working reference workflow they can
+# copy into their LLM-product repos.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evaldiff:
+    runs-on: ubuntu-latest
+    # Skip fork PRs — GITHUB_TOKEN is read-only there and the comment
+    # post would fail. Fork-PR coverage needs `pull_request_target`,
+    # which is a security-sensitive separate workflow.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: "Git Checkout"
+        uses: actions/checkout@v6
+        with:
+          # Need the merge-base history so `git worktree add <base.sha>`
+          # can find the base commit.
+          fetch-depth: 0
+
+      - name: "Set up Go"
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: "Build evaldiff"
+        run: go build -o evaldiff ./cmd/evaldiff/
+
+      - name: "Add base worktree"
+        run: git worktree add ../evaldiff-base "${{ github.event.pull_request.base.sha }}"
+
+      - name: "Run evaldiff (markdown)"
+        run: |
+          ./evaldiff risk --format markdown ../evaldiff-base . > evaldiff.md
+          echo "--- evaldiff.md ---"
+          cat evaldiff.md
+
+      - name: "Post sticky comment"
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: evaldiff
+          path: evaldiff.md
