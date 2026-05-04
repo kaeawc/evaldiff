@@ -2,6 +2,7 @@ package coverage
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -57,9 +58,10 @@ func topLevelTest(outer, def *sitter.Node, file string, src []byte) (TestEntry, 
 		return TestEntry{}, false
 	}
 	return TestEntry{
-		File: file,
-		Line: int(outer.StartPoint().Row) + 1,
-		Name: name,
+		File:        file,
+		Line:        int(outer.StartPoint().Row) + 1,
+		Name:        name,
+		Identifiers: collectBodyIdentifiers(def, src),
 	}, true
 }
 
@@ -99,10 +101,11 @@ func classTests(cls *sitter.Node, file string, src []byte) []TestEntry {
 			continue
 		}
 		out = append(out, TestEntry{
-			File:  file,
-			Line:  int(outer.StartPoint().Row) + 1,
-			Name:  methodName,
-			Class: className,
+			File:        file,
+			Line:        int(outer.StartPoint().Row) + 1,
+			Name:        methodName,
+			Class:       className,
+			Identifiers: collectBodyIdentifiers(def, src),
 		})
 	}
 	return out
@@ -129,4 +132,44 @@ func nodeText(n *sitter.Node, src []byte) string {
 		return ""
 	}
 	return n.Content(src)
+}
+
+// collectBodyIdentifiers walks the test function's body and returns the
+// sorted, deduplicated set of identifier names that appear anywhere in
+// expressions. Parameter names (including `self`) and locally-defined
+// names from `as` clauses or assignment targets are included — that's
+// the over-approximation; AttachTouches only intersects this set with
+// imported names, so spurious local identifiers don't pollute Touches.
+func collectBodyIdentifiers(def *sitter.Node, src []byte) []string {
+	body := def.ChildByFieldName("body")
+	if body == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	walkNamed(body, func(n *sitter.Node) {
+		if n.Type() == "identifier" {
+			seen[n.Content(src)] = struct{}{}
+		}
+	})
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// walkNamed does a depth-first pre-order traversal of named children
+// only, invoking fn at every node.
+func walkNamed(n *sitter.Node, fn func(*sitter.Node)) {
+	if n == nil {
+		return
+	}
+	fn(n)
+	for i := uint32(0); i < n.NamedChildCount(); i++ {
+		walkNamed(n.NamedChild(int(i)), fn)
+	}
 }

@@ -28,12 +28,19 @@ type Coverage struct {
 // TestEntry describes one statically-discovered test. Class is empty for
 // top-level test functions and set to the enclosing class name for class
 // methods (pytest collects both).
+//
+// Identifiers is the sorted, deduplicated set of identifier names that
+// appear in the test's body — function calls, attribute targets, name
+// references in any expression. It's an over-approximation (any token
+// that looks like an identifier counts) used by AttachTouches to
+// refine the file-coarse import-based mapping into per-test touches.
 type TestEntry struct {
-	File    string        `json:"file"`
-	Line    int           `json:"line"`
-	Name    string        `json:"name"`
-	Class   string        `json:"class,omitempty"`
-	Touches []BehaviorRef `json:"touches,omitempty"`
+	File        string        `json:"file"`
+	Line        int           `json:"line"`
+	Name        string        `json:"name"`
+	Class       string        `json:"class,omitempty"`
+	Identifiers []string      `json:"identifiers,omitempty"`
+	Touches     []BehaviorRef `json:"touches,omitempty"`
 }
 
 // BehaviorRef points at one Agent or Tool in the behavior index. The
