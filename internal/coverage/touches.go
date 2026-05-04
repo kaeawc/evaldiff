@@ -43,9 +43,11 @@ func AttachTouches(ctx context.Context, fs vfs.FS, cov *Coverage, idx *index.Ind
 }
 
 // buildRefsByFile flattens an index into "given a file path, what
-// behaviors live in it." Agent BehaviorRefs use a constructor#ordinal
-// name to match the diff package's identity scheme; tool refs use the
-// tool's own name.
+// behaviors live in it." Agent BehaviorRefs use the literal `name`
+// kwarg when present (the SDK convention) and fall back to
+// constructor#ordinal so unnamed agents still have a stable identity
+// matching the diff package's heuristic. Tool refs use the tool's own
+// name.
 func buildRefsByFile(idx *index.Index) map[string][]BehaviorRef {
 	out := map[string][]BehaviorRef{}
 	for _, fe := range idx.Files {
@@ -53,7 +55,7 @@ func buildRefsByFile(idx *index.Index) map[string][]BehaviorRef {
 			out[fe.File] = append(out[fe.File], BehaviorRef{
 				Kind: "agent",
 				File: fe.File,
-				Name: a.Constructor + "#" + strconv.Itoa(i),
+				Name: agentRefName(a, i),
 			})
 		}
 		for _, t := range fe.Tools {
@@ -65,6 +67,13 @@ func buildRefsByFile(idx *index.Index) map[string][]BehaviorRef {
 		}
 	}
 	return out
+}
+
+func agentRefName(a index.Agent, ordinal int) string {
+	if a.Name.IsLiteral() {
+		return a.Name.Str
+	}
+	return a.Constructor + "#" + strconv.Itoa(ordinal)
 }
 
 func groupTestsByFile(cov *Coverage) map[string][]int {

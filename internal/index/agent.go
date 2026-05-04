@@ -18,6 +18,7 @@ type Agent struct {
 	File        string `json:"file"`        // file path passed to ExtractAgents
 	Line        int    `json:"line"`        // 1-based line of the call expression
 	Constructor string `json:"constructor"` // identifier or attribute text, e.g. "Agent" or "claude.Agent"
+	Name        Value  `json:"name"`        // literal value of the `name` kwarg, used as stable identity when present
 	Model       Value  `json:"model"`
 	System      Value  `json:"system"`
 	Tools       Value  `json:"tools"`
@@ -51,6 +52,8 @@ func ExtractAgents(ctx context.Context, file string, src []byte) ([]Agent, error
 		if argList := n.ChildByFieldName("arguments"); argList != nil {
 			forEachKwarg(argList, src, func(kw string, value Value) {
 				switch kw {
+				case "name":
+					a.Name = value
 				case "model":
 					a.Model = value
 				case "system", "system_prompt", "instructions":

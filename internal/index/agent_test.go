@@ -119,6 +119,19 @@ my.agent(model="z")
 			}},
 		},
 		{
+			name: "name kwarg extracted (OpenAI Agents SDK shape)",
+			src: `Agent(name="Translator", model="gpt-5", instructions="Translate text.")
+`,
+			want: []Agent{{
+				File:        "/x.py",
+				Line:        1,
+				Constructor: "Agent",
+				Name:        Value{Kind: ValueLiteral, Str: "Translator", Source: `"Translator"`},
+				Model:       Value{Kind: ValueLiteral, Str: "gpt-5", Source: `"gpt-5"`},
+				System:      Value{Kind: ValueLiteral, Str: "Translate text.", Source: `"Translate text."`},
+			}},
+		},
+		{
 			name: "no Agent calls in file → empty result",
 			src:  "x = 1\n",
 			want: nil,

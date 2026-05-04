@@ -264,6 +264,66 @@ func TestDiff_ModelOnlyChange_NoTextDiffAttached(t *testing.T) {
 	}
 }
 
+func TestDiff_NamedAgentsSurviveReorder(t *testing.T) {
+	// Two agents in source order [A, B] in base, [B, A] in head.
+	// Ordinal-keyed identity would flag two modifications; name-keyed
+	// identity correctly reports zero changes.
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="alpha", model="m1")
+Agent(name="beta",  model="m2")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="beta",  model="m2")
+Agent(name="alpha", model="m1")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if !cs.IsEmpty() {
+		t.Fatalf("expected no changes for named-agent reorder, got %+v", cs)
+	}
+}
+
+func TestDiff_NamedAgentModelChangeAfterReorder(t *testing.T) {
+	// Reorder + edit one named agent. Identity by name should produce
+	// exactly one Modified entry (not the four-event mess that ordinal
+	// keying would produce).
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="alpha", model="sonnet")
+Agent(name="beta",  model="opus")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="beta",  model="opus")
+Agent(name="alpha", model="opus")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Modified) != 1 || len(cs.Agents.Added) != 0 || len(cs.Agents.Removed) != 0 {
+		t.Fatalf("expected 1 modification only, got %+v", cs.Agents)
+	}
+	mod := cs.Agents.Modified[0]
+	if mod.Before.Name.Str != "alpha" || mod.After.Name.Str != "alpha" {
+		t.Fatalf("expected the alpha agent modified, got before=%q after=%q",
+			mod.Before.Name.Str, mod.After.Name.Str)
+	}
+	if !reflect.DeepEqual(mod.Fields, []string{"model"}) {
+		t.Fatalf("Fields = %v, want [model]", mod.Fields)
+	}
+}
+
+func TestDiff_AddingNameSurfacesAsRemovePlusAdd(t *testing.T) {
+	// Documented edge case: editing a previously-unnamed agent to add an
+	// explicit name flips identity from #ordinal to ::name. Diff
+	// reports remove + add. This is the honest signal we accept.
+	base := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(model="m")`,
+	}, "/repo")
+	head := buildIdx(t, map[string]string{
+		"/repo/a.py": `Agent(name="finally_named", model="m")`,
+	}, "/repo")
+	cs := Diff(base, head)
+	if len(cs.Agents.Added) != 1 || len(cs.Agents.Removed) != 1 || len(cs.Agents.Modified) != 0 {
+		t.Fatalf("expected exactly 1 add + 1 remove, got %+v", cs.Agents)
+	}
+}
+
 func TestDiff_NilIndexes_BehaveAsEmpty(t *testing.T) {
 	cs := Diff(nil, nil)
 	if !cs.IsEmpty() {
