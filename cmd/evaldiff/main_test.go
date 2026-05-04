@@ -194,6 +194,107 @@ func TestRun_Coverage_RequiresOneDirArg(t *testing.T) {
 	}
 }
 
+func TestRun_Risk_HeadlineShorthandReturnsAtRiskTests(t *testing.T) {
+	baseDir := t.TempDir()
+	headDir := t.TempDir()
+	mustWrite(t, filepath.Join(baseDir, "app", "agents.py"), `from agents import Agent
+researcher = Agent(name="researcher", model="sonnet", instructions="research")
+`)
+	mustWrite(t, filepath.Join(headDir, "app", "agents.py"), `from agents import Agent
+researcher = Agent(name="researcher", model="opus", instructions="research")
+`)
+	// The test file goes only in head — that's the source of HEAD coverage.
+	mustWrite(t, filepath.Join(headDir, "tests", "test_pipeline.py"), `from app.agents import researcher
+
+def test_research(): pass
+def test_unrelated(): pass
+`)
+	// Match files between base and head tree shapes so paths line up.
+	mustWrite(t, filepath.Join(baseDir, "tests", "test_pipeline.py"), `from app.agents import researcher
+
+def test_research(): pass
+def test_unrelated(): pass
+`)
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{baseDir, headDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	var got struct {
+		Tests []struct {
+			Test struct {
+				Name string `json:"name"`
+				File string `json:"file"`
+			} `json:"test"`
+			Affected []struct {
+				Ref struct {
+					Kind string `json:"kind"`
+					Name string `json:"name"`
+				} `json:"ref"`
+				Kind  string  `json:"kind"`
+				Score float64 `json:"score"`
+			} `json:"affected"`
+			Score float64 `json:"score"`
+		} `json:"tests"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, stdout.String())
+	}
+	if len(got.Tests) != 2 {
+		t.Fatalf("Tests count = %d, want 2 (file-coarse mapping puts both tests at risk)", len(got.Tests))
+	}
+	if got.Tests[0].Score != 1.0 || got.Tests[0].Affected[0].Ref.Name != "researcher" {
+		t.Fatalf("first test entry: %+v", got.Tests[0])
+	}
+}
+
+func TestRun_Risk_ExplicitSubcommandWorks(t *testing.T) {
+	baseDir := t.TempDir()
+	headDir := t.TempDir()
+	src := `from agents import Agent
+a = Agent(name="a", model="m", instructions="x")
+`
+	mustWrite(t, filepath.Join(baseDir, "x.py"), src)
+	mustWrite(t, filepath.Join(headDir, "x.py"), src)
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"risk", baseDir, headDir}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	// No changes → empty result, but must be valid JSON.
+	if !json.Valid(stdout.Bytes()) {
+		t.Fatalf("not valid JSON: %s", stdout.String())
+	}
+}
+
+func TestRun_Risk_RequiresTwoArgs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"risk", "/tmp"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
+func TestRun_HeadlineShorthand_TyposSurfaceAsErrors(t *testing.T) {
+	// `evaldiff indxe foo` (typo for `index`) gets caught by the
+	// 2-arg risk shorthand and tries to use "indxe" as a base
+	// directory. The user sees a clear filesystem error rather than
+	// silent nonsense — that's the contract.
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"indxe", "foo"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// Either "unknown command" or a filesystem error from the index
+	// build is acceptable; the important contract is the user sees
+	// a clear error rather than silent success.
+	if !strings.Contains(err.Error(), "unknown command") &&
+		!strings.Contains(err.Error(), "no such file") &&
+		!strings.Contains(err.Error(), "lstat") {
+		t.Fatalf("error %q should surface as command-or-filesystem error", err)
+	}
+}
+
 func TestRun_Diff_RequiresTwoDirArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"diff", "/tmp"}, &stdout, &stderr)
